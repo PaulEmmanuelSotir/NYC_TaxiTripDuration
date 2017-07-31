@@ -1,34 +1,25 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 """ NYC Taxi Trip Duration - Kaggle competion
+Note that the code could probably be greatly simplified using tf.train.Supervisor and tf.contrib.learn.dnnregressor,
+but we prefer to define model by hand here to learn more about tensorflow python API.
 
 TODO:
-    * Just do it
+    * try batch normalization
+    * try to train deeper models on more data
 
-.. See https://github.com/PaulEmmanuelSotir/NYCTaxiTripDuration
+.. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration and https://www.floydhub.com/paulemmanuel/projects/nyc_taxi_trip_duration
 """
 import math
+import argparse
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from sklearn.preprocessing import normalize
 from sklearn.model_selection import train_test_split
-
-# TODO: use batch normalization and/or input feature normalization
 
 __all__ = ['load_data', 'build_model', 'train']
 
-USE_FLOYD = True # TODO: take it as command arg
-SAVE_DIR = '/output/model/' if USE_FLOYD else './model/'
-TRAIN_SET = '/input/train.csv' if USE_FLOYD else './NYC_taxi_data_2016/train.csv'
-PRED_SET = '/input/test.csv' if USE_FLOYD else './NYC_taxi_data_2016/test.csv'
-
-DEFAULT_HYPERPARAMETERS = {'lr': 0.008423,
-                           'batch_size': 119,
-                           'hidden_size': 560,
-                           'weight_std_dev': 0.0976,
-                           'dropout_keep_prob': 0.806}
-
+DEFAULT_HYPERPARAMETERS = {'lr': 0.0014642413409643805, 'batch_size': 256, 'weight_std_dev': 0.09628399771274719, 'hidden_size': 512, 'dropout_keep_prob': 0.822902075856152}
 TRAINING_EPOCHS = 200
 DISPLAY_STEP_PREDIOD = 1
 ALLOW_GPU_MEM_GROWTH = True
@@ -74,9 +65,8 @@ def load_data(train_path, test_path):
     # Process harversine distance from longitudes and latitudes
     trainset['radial_distance'] = _haversine_np(trainset.pickup_longitude, trainset.pickup_latitude, trainset.dropoff_longitude, trainset.dropoff_latitude)
     predset['radial_distance'] = _haversine_np(predset.pickup_longitude, predset.pickup_latitude, trainset.dropoff_longitude, predset.dropoff_latitude)
-    # Normalize trip durations
-    trip_durations = trainset['trip_duration'].astype(np.float32)
-    trainset['trip_duration'] = normalize(trip_durations[:, np.newaxis], axis=0).ravel() # TODO: try to normalize log(trip_duration) instead of trip_duration
+    # Transform target trip durations to log(trip durations) (permits to get a gaussian distribution of trip_durations, see data exploration notebook)
+    trainset['trip_duration'] = np.log(trainset['trip_duration'] + 1)
     # Remove unused columns and split input feature columns from target column
     features = [key for key in trainset.keys().intersection(predset.keys()) if key != 'id' and key != 'pickup_datetime']
     targets, data = trainset['trip_duration'].get_values().reshape([-1, 1]), trainset[features].get_values()
@@ -157,7 +147,7 @@ def train(model, dataset, epochs, hyperparameters, save_dir=None):
                     summary_writer.add_summary(summary, epoch)
                 else:
                     last_loss = sess.run(loss, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
-                print("Epoch=%03d/%03d, last_loss=%.8f (rmse=%.6f), batch_count=%d" % (epoch, epochs, last_loss, math.sqrt(last_loss), batch_count))
+                print("Epoch=%03d/%03d, last_loss=%.8f (rmse=%.6f)" % (epoch, epochs, last_loss, math.sqrt(last_loss)))
         # Calculate test MSE
         print("Training done, testing...")
         test_mse = sess.run(loss, feed_dict={X: test_data, y: test_targets, dropout_keep_prob:1.})
@@ -169,17 +159,24 @@ def train(model, dataset, epochs, hyperparameters, save_dir=None):
         return test_mse
 
 def main():
+    parser = argparse.ArgumentParser(description='Trains NYC Taxi trip duration fully connected neural network model for Kaggle competition submission.')
+    parser.add_argument('--floyd-job', action='store_true', help='Change working directories for training on Floyd service')
+    args = parser.parse_args()
+    save_dir = '/output/model/' if args.floyd_job else './model/'
+    train_set_path = '/input/train.csv' if args.floyd_job else './NYC_taxi_data_2016/train.csv'
+    pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
+
     hyperparameters = DEFAULT_HYPERPARAMETERS
 
     # Parse and preprocess data
-    features, predset, dataset = load_data(TRAIN_SET, PRED_SET)
+    features, predset, dataset = load_data(train_set_path, pred_set_path)
 
     # Build model
     model = build_model(len(features), hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], hyperparameters['lr'])
 
     # Training model
     print('Model built, starting training.')
-    train(model, dataset, TRAINING_EPOCHS, hyperparameters, SAVE_DIR)
+    train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir)
 
 if __name__ == '__main__':
     main()

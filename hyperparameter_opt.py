@@ -2,6 +2,11 @@
 # -*- coding: utf-8 -*-
 """ Hyperparameter optimization of DNN model
 Uses hyperopt module to search for optimal DNN hyper parameters.
+
+TODO:
+    * handle early stoping and progressively increase dataset size (or/and NN depth) during hyperparameter optimization to accelerate optmization and allow more model evaluations
+
+.. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration and https://www.floydhub.com/paulemmanuel/projects/nyc_taxi_trip_duration
 """
 import tensorflow as tf
 import hyperopt as ho
@@ -11,16 +16,8 @@ import math
 
 import nyc_dnn
 
-# TODO: handle early stoping and progressively increase dataset size during optimization (or/and even NN depth) to accelerate optmization
-
-# Define train/predict set paths and save directory
-USE_FLOYD = True # TODO: take it as command arg
-SAVE_DIR = '/output/hyperopt_models/' if USE_FLOYD else './hyperopt_models/'
-TRAIN_SET = '/input/train.csv' if USE_FLOYD else './NYC_taxi_data_2016/train.csv'
-PRED_SET = '/input/test.csv' if USE_FLOYD else './NYC_taxi_data_2016/test.csv'
-
 # Hyperparameter optimization space and algorithm
-TRAINING_EPOCHS = 30
+TRAINING_EPOCHS = 25
 MAX_EVALS = 100
 OPT_ALGO = ho.tpe.suggest
 HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-5), math.log(1e-2)),
@@ -30,8 +27,16 @@ HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-5), math.log(1e-2)),
             'dropout_keep_prob': ho.hp.normal('dropout_keep_prob', 0.7, 0.05)} # TODO: clip normal to avoid invalid dropout prob
 
 def main():
+    # Parse cmd arguments
+    parser = argparse.ArgumentParser(description='Trains NYC Taxi trip duration fully connected neural network model for Kaggle competition submission.')
+    parser.add_argument('--floyd-job', action='store_true', help='Change working directories for training on Floyd service')
+    args = parser.parse_args()
+    save_dir = '/output/hyperopt_models/' if args.floyd_job else './hyperopt_models/'
+    train_set_path = '/input/train.csv' if args.floyd_job else './NYC_taxi_data_2016/train.csv'
+    pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
+
     # Parse and preprocess data
-    features, predset, dataset = nyc_dnn.load_data(TRAIN_SET, PRED_SET)
+    features, predset, dataset = nyc_dnn.load_data(train_set_path, pred_set_path)
     dataset = tuple(d[:20000] for d in dataset) # TODO: temporary
 
     # Define objective function optimized by hyperopt
@@ -48,7 +53,7 @@ def main():
         # Build model
         model = nyc_dnn.build_model(len(features), hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], hyperparameters['lr'])
         # Train model
-        model_save_dir = SAVE_DIR + str(eval_count) + '/' # TODO: find a better way to do this (probably using hyperopt possibilities)
+        model_save_dir = save_dir + str(eval_count) + '/' # TODO: find a better way to do this (probably using hyperopt possibilities)
         test_mse = nyc_dnn.train(model, dataset, TRAINING_EPOCHS, hyperparameters, model_save_dir)
         return {'loss': test_mse, # TODO: put last batch average loss here?
                 'true_loss': test_mse,
