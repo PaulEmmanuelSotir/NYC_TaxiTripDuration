@@ -19,7 +19,7 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'lr': 0.0014642413409643805, 'batch_size': 256, 'weight_std_dev': 0.09628399771274719, 'hidden_size': 512, 'dropout_keep_prob': 0.822902075856152}
+DEFAULT_HYPERPARAMETERS = {'lr': 0.0014642413409643805, 'depth': 7, 'batch_size': 256, 'weight_std_dev': 0.09628399771274719, 'hidden_size': 512, 'dropout_keep_prob': 0.822902075856152}
 TRAINING_EPOCHS = 200
 DISPLAY_STEP_PREDIOD = 1
 ALLOW_GPU_MEM_GROWTH = True
@@ -72,36 +72,32 @@ def load_data(train_path, test_path):
     targets, data = trainset['trip_duration'].get_values().reshape([-1, 1]), trainset[features].get_values()
     return features, predset, train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE)
 
-def _mlp(_X, _weights, _biases, dropout_keep_prob):
-    layer1 = tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(_X, _weights['w1']), _biases['b1'])), dropout_keep_prob)
-    layer2 = tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layer1, _weights['w2']), _biases['b2'])), dropout_keep_prob)
-    layer3 = tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layer2, _weights['w3']), _biases['b3'])), dropout_keep_prob)
-    layer4 = tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layer3, _weights['w4']), _biases['b4'])), dropout_keep_prob)
-    out = tf.add(tf.matmul(layer4, _weights['w_out']), _biases['b_out'])
+def _mlp(X, weights, biases, dropout_keep_prob):
+    layers = [tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
+    for w, b in zip(weights[1:-1], biases[1:-1]):
+        layers.append(tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob))
+    out = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1])
     return out
 
-def build_model(n_input, hidden_size, weight_std_dev, learning_rate):
+def build_model(n_input, depth, hidden_size, weight_std_dev, learning_rate):
     # Define placeholders
     X = tf.placeholder(tf.float32, [None, n_input], name='X')
     y = tf.placeholder(tf.float32, [None, 1], name='y')
     dropout_keep_prob = tf.placeholder(tf.float32, name='dropout_keep_prob')
-    # Define MLP weights and biases variables
+
     with tf.name_scope('mlp'):
-        n_hidden_1, n_hidden_2, n_hidden_3, n_hidden_4 = (hidden_size, hidden_size, hidden_size, hidden_size)
-        weights = {'w1': tf.Variable(tf.random_normal([n_input, n_hidden_1], stddev=weight_std_dev), name='w1'),
-                   'w2': tf.Variable(tf.random_normal([n_hidden_1, n_hidden_2], stddev=weight_std_dev), name='w2'),
-                   'w3': tf.Variable(tf.random_normal([n_hidden_2, n_hidden_3], stddev=weight_std_dev), name='w3'),
-                   'w4': tf.Variable(tf.random_normal([n_hidden_3, n_hidden_4], stddev=weight_std_dev), name='w4'),
-                   'w_out': tf.Variable(tf.random_normal([n_hidden_4, 1], stddev=weight_std_dev), name='w_out')}
-        biases = {'b1': tf.Variable(tf.random_normal([n_hidden_1]), name='b1'),
-                  'b2': tf.Variable(tf.random_normal([n_hidden_2]), name='b2'),
-                  'b3': tf.Variable(tf.random_normal([n_hidden_3]), name='b3'),
-                  'b4': tf.Variable(tf.random_normal([n_hidden_4]), name='b4'),
-                  'b_out': tf.Variable(tf.random_normal([1]), name='b_out')}
+        # Define MLP weights and biases variables
+        weights = [tf.Variable(tf.random_normal([n_input, hidden_size], stddev=weight_std_dev), name='w1')]
+        biases = [tf.Variable(tf.random_normal([hidden_size]), name='b1')]
+        for i in range(1, depth-1):
+            weights.append(tf.Variable(tf.random_normal([hidden_size, hidden_size], stddev=weight_std_dev), name='w' + str(i)))
+            biases.append(tf.Variable(tf.random_normal([hidden_size]), name='b' + str(i)))
+        weights.append(tf.Variable(tf.random_normal([hidden_size, 1], stddev=weight_std_dev), name='w_out'))
+        biases.append(tf.Variable(tf.random_normal([1]), name='b_out'))
         # Build fully connected layers
         pred = _mlp(X, weights, biases, dropout_keep_prob)
     # Add variables to summary
-    for v in [*biases.values(), *weights.values()]:
+    for v in [*biases, *weights]:
         tf.summary.histogram(v.name, v)
     # Define loss and optimizer
     loss = tf.losses.mean_squared_error(y, pred) # TODO: try NLL/cross entropy instead (with and without log pre-processing to see the effect of gaussian data distribution)
@@ -159,6 +155,7 @@ def train(model, dataset, epochs, hyperparameters, save_dir=None):
         return test_mse
 
 def main():
+    # Parse cmd arguments
     parser = argparse.ArgumentParser(description='Trains NYC Taxi trip duration fully connected neural network model for Kaggle competition submission.')
     parser.add_argument('--floyd-job', action='store_true', help='Change working directories for training on Floyd service')
     args = parser.parse_args()
@@ -166,15 +163,14 @@ def main():
     train_set_path = '/input/train.csv' if args.floyd_job else './NYC_taxi_data_2016/train.csv'
     pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
 
-    hyperparameters = DEFAULT_HYPERPARAMETERS
-
     # Parse and preprocess data
     features, predset, dataset = load_data(train_set_path, pred_set_path)
 
     # Build model
-    model = build_model(len(features), hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], hyperparameters['lr'])
+    hyperparameters = DEFAULT_HYPERPARAMETERS
+    model = build_model(len(features), hyperparameters['depth'], hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], hyperparameters['lr'])
 
-    # Training model
+    # Train model
     print('Model built, starting training.')
     train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir)
 
