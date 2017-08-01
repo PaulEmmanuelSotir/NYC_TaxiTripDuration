@@ -22,7 +22,7 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'batch_size': 254.0, 'depth': 6.0, 'dropout_keep_prob': 1.0004214204466624, 'hidden_size': 144.0, 'weight_std_dev': 0.09524260785697578, 'lr': 0.0012399079617338193}
+DEFAULT_HYPERPARAMETERS = {'batch_size': 254, 'depth': 6, 'dropout_keep_prob': 1.0004214204466624, 'hidden_size': 144, 'weight_std_dev': 0.09524260785697578, 'lr': 0.0012399079617338193}
 TRAINING_EPOCHS = 125
 DISPLAY_STEP_PREDIOD = 10
 ALLOW_GPU_MEM_GROWTH = True

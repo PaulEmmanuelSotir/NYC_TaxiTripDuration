@@ -32,6 +32,11 @@ HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-5), math.log(1e-2)),
             'weight_std_dev': ho.hp.normal('weight_std_dev', 0.1, 0.01), # TODO: clip normal to avoid invalid std dev
             'dropout_keep_prob': ho.hp.normal('dropout_keep_prob', 0.7, 0.05)} # TODO: clip normal to avoid invalid dropout prob
 
+def _cast_hyperparameters(hyperparameters):
+    hyperparameters['hidden_size'] = int(hyperparameters['hidden_size'])
+    hyperparameters['batch_size'] = int(hyperparameters['batch_size'])
+    hyperparameters['depth'] = int(hyperparameters['depth'])
+
 def main():
     # Parse cmd arguments
     parser = argparse.ArgumentParser(description='Trains NYC Taxi trip duration fully connected neural network model for Kaggle competition submission.')
@@ -50,11 +55,9 @@ def main():
     # Define objective function optimized by hyperopt
     eval_count = 0
     def _objective(hyperparameters):
+        _cast_hyperparameters(hyperparameters)
         nonlocal eval_count
         eval_count += 1
-        hyperparameters['hidden_size'] = int(hyperparameters['hidden_size'])
-        hyperparameters['batch_size'] = int(hyperparameters['batch_size'])
-        hyperparameters['depth'] = int(hyperparameters['depth'])
         print('\n\n' + '#' * 10 + ' TRYING HYPERPERPARAMETER SET #' + str(eval_count) + ' ' + '#' * 10)
         print(hyperparameters)
 		# Reset default tensorflow graph
@@ -76,6 +79,7 @@ def main():
                               algo=OPT_ALGO,
                               max_evals=MAX_EVALS,
                               trials=trials)
+    _cast_hyperparameters(best_parameters)
     print('\n\n' + '#' * 20 + '  BEST HYPERPARAMETERS  ' + '#' * 20)
     print(best_parameters)
 
