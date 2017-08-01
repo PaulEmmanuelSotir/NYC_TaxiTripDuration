@@ -10,7 +10,7 @@ TODO:
     * try to dicretize trip_duration and use softmax layer for classification instead of a regression with linear output
     * determine whether if cross validation could improve accuracy
 
-.. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration and https://www.floydhub.com/paulemmanuel/projects/nyc_taxi_trip_duration
+.. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
 import os
 import math

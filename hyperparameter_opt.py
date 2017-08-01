@@ -7,7 +7,7 @@ TODO:
     * avoid writing to many tf summaries
     * handle early stoping and progressively increase dataset size (or/and NN depth) during hyperparameter optimization to accelerate optmization and allow more model evaluations
 
-.. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration and https://www.floydhub.com/paulemmanuel/projects/nyc_taxi_trip_duration
+.. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
 from sklearn.utils import resample
 import tensorflow as tf

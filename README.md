@@ -1,9 +1,6 @@
 # NYC Taxi Trip Duration - Kaggle competition
 Kaggle competition submission using a simple fully connected neural network implemented on tensorflow and whose hyperparamters are optimized using hyperopt.
 
-See Floyd project page [here](https://www.floydhub.com/paulemmanuel/projects/nyc_taxi_trip_duration)
-and Github project page [here](https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration)
-
 ## Run instructions
 Assuming you installed Python 3 with *tensorflow*, *scikit-learn*, *numpy* and eventually *hyperopt*, you need to:  
 
