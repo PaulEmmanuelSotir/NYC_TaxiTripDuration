@@ -22,25 +22,18 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'batch_size': 254, 'depth': 6, 'dropout_keep_prob': 1.0004214204466624, 'hidden_size': 144, 'weight_std_dev': 0.09524260785697578, 'lr': 0.0012399079617338193}
-TRAINING_EPOCHS = 125
-DISPLAY_STEP_PREDIOD = 10
+DEFAULT_HYPERPARAMETERS = {'lr': 0.00003869398376828445, 'depth': 9, 'dropout_keep_prob': 0.64893328427820518, 'hidden_size': 512, 'batch_size': 512, 'weight_std_dev': 0.10134450718453812}
+TRAINING_EPOCHS = 250
+DISPLAY_STEP_PREDIOD = 2
 ALLOW_GPU_MEM_GROWTH = True
 TEST_SIZE = 0.1
 RANDOM_STATE = 100 # Random state for train_test_split
 
 def _haversine_np(lon1, lat1, lon2, lat2):
-    """
-    Calculate the great circle distance between two points
-    on the earth (specified in decimal degrees)
-    """
     lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
-
     dlon = lon2 - lon1
     dlat = lat2 - lat1
-
     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
-
     c = 2 * np.arcsin(np.sqrt(a))
     km = 6367 * c
     return km
@@ -81,7 +74,7 @@ def _mlp(X, weights, biases, dropout_keep_prob):
         layers.append(tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob))
     out = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='output')
     return out
-
+    
 def build_model(n_input, depth, hidden_size, weight_std_dev, learning_rate):
     # Define placeholders
     X = tf.placeholder(tf.float32, [None, n_input], name='X')

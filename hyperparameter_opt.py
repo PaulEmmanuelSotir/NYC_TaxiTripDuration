@@ -19,23 +19,23 @@ import math
 
 import nyc_dnn
 
-TRAINING_EPOCHS = 45
-SUB_TRAINSET_SIZE = 0.012
+TRAINING_EPOCHS = 100
+SUB_TRAINSET_SIZE = 0.1
 
 # Hyperparameter optimization space and algorithm
-MAX_EVALS = 120
+MAX_EVALS = 100
 OPT_ALGO = ho.tpe.suggest
-HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-5), math.log(1e-2)),
-            'depth': ho.hp.quniform('depth', 6, 8, 1),
-            'batch_size': ho.hp.quniform('batch_size', 32, 256, 1),
-            'hidden_size': ho.hp.quniform('hidden_size', 128, 1024, 1),
-            'weight_std_dev': ho.hp.normal('weight_std_dev', 0.1, 0.01), # TODO: clip normal to avoid invalid std dev
-            'dropout_keep_prob': ho.hp.normal('dropout_keep_prob', 0.7, 0.05)} # TODO: clip normal to avoid invalid dropout prob
+HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-6), math.log(1e-2)),
+            'depth': ho.hp.quniform('depth', 6, 9, 1),
+            'batch_size': ho.hp.choice('batch_size', [128, 256, 512]),
+            'hidden_size': ho.hp.choice('hidden_size', [64, 128, 256, 512, 1024]),
+            'weight_std_dev': ho.hp.normal('weight_std_dev', 0.1, 0.01),
+            'dropout_keep_prob': ho.hp.normal('dropout_keep_prob', 0.7, 0.03)}
 
-def _cast_hyperparameters(hyperparameters):
-    hyperparameters['hidden_size'] = int(hyperparameters['hidden_size'])
-    hyperparameters['batch_size'] = int(hyperparameters['batch_size'])
+def _correct_hyperparameters(hyperparameters):
     hyperparameters['depth'] = int(hyperparameters['depth'])
+    hyperparameters['weight_std_dev'] = np.clip(hyperparameters['weight_std_dev'], 1e-9, 1.)
+    hyperparameters['dropout_keep_prob'] = np.clip(hyperparameters['dropout_keep_prob'], 0.05, 1.)
 
 def main():
     # Parse cmd arguments
@@ -55,7 +55,7 @@ def main():
     # Define objective function optimized by hyperopt
     eval_count = 0
     def _objective(hyperparameters):
-        _cast_hyperparameters(hyperparameters)
+        _correct_hyperparameters(hyperparameters)
         nonlocal eval_count
         eval_count += 1
         print('\n\n' + '#' * 10 + ' TRYING HYPERPERPARAMETER SET #' + str(eval_count) + ' ' + '#' * 10)
@@ -79,7 +79,7 @@ def main():
                               algo=OPT_ALGO,
                               max_evals=MAX_EVALS,
                               trials=trials)
-    _cast_hyperparameters(best_parameters)
+    _correct_hyperparameters(best_parameters)
     print('\n\n' + '#' * 20 + '  BEST HYPERPARAMETERS  ' + '#' * 20)
     print(best_parameters)
 
