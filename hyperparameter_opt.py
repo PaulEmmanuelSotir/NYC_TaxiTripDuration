@@ -19,14 +19,14 @@ import math
 
 import nyc_dnn
 
-TRAINING_EPOCHS = 25
+TRAINING_EPOCHS = 45
 SUB_TRAINSET_SIZE = 0.012
 
 # Hyperparameter optimization space and algorithm
 MAX_EVALS = 120
 OPT_ALGO = ho.tpe.suggest
 HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-5), math.log(1e-2)),
-            'depth': ho.hp.quniform('depth', 3, 8, 1),
+            'depth': ho.hp.quniform('depth', 6, 8, 1),
             'batch_size': ho.hp.quniform('batch_size', 32, 256, 1),
             'hidden_size': ho.hp.quniform('hidden_size', 128, 1024, 1),
             'weight_std_dev': ho.hp.normal('weight_std_dev', 0.1, 0.01), # TODO: clip normal to avoid invalid std dev

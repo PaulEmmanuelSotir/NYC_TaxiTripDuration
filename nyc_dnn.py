@@ -7,9 +7,12 @@ but we prefer to define model by hand here to learn more about tensorflow python
 TODO:
     * try batch normalization
     * try to train deeper models on more data
+    * try to dicretize trip_duration and use softmax layer for classification instead of a regression with linear output
+    * determine whether if cross validation could improve accuracy
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration and https://www.floydhub.com/paulemmanuel/projects/nyc_taxi_trip_duration
 """
+import os
 import math
 import argparse
 import numpy as np
@@ -19,9 +22,9 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'lr': 0.0014642413409643805, 'depth': 7, 'batch_size': 256, 'weight_std_dev': 0.09628399771274719, 'hidden_size': 512, 'dropout_keep_prob': 0.822902075856152}
-TRAINING_EPOCHS = 200
-DISPLAY_STEP_PREDIOD = 1
+DEFAULT_HYPERPARAMETERS = {'batch_size': 254.0, 'depth': 6.0, 'dropout_keep_prob': 1.0004214204466624, 'hidden_size': 144.0, 'weight_std_dev': 0.09524260785697578, 'lr': 0.0012399079617338193}
+TRAINING_EPOCHS = 125
+DISPLAY_STEP_PREDIOD = 10
 ALLOW_GPU_MEM_GROWTH = True
 TEST_SIZE = 0.1
 RANDOM_STATE = 100 # Random state for train_test_split
@@ -70,13 +73,13 @@ def load_data(train_path, test_path):
     # Remove unused columns and split input feature columns from target column
     features = [key for key in trainset.keys().intersection(predset.keys()) if key != 'id' and key != 'pickup_datetime']
     targets, data = trainset['trip_duration'].get_values().reshape([-1, 1]), trainset[features].get_values()
-    return features, predset, train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+    return features, (predset['id'], predset[features].get_values()), train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE)
 
 def _mlp(X, weights, biases, dropout_keep_prob):
     layers = [tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
     for w, b in zip(weights[1:-1], biases[1:-1]):
         layers.append(tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob))
-    out = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1])
+    out = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='output')
     return out
 
 def build_model(n_input, depth, hidden_size, weight_std_dev, learning_rate):
@@ -100,19 +103,19 @@ def build_model(n_input, depth, hidden_size, weight_std_dev, learning_rate):
     for v in [*biases, *weights]:
         tf.summary.histogram(v.name, v)
     # Define loss and optimizer
-    loss = tf.losses.mean_squared_error(y, pred) # TODO: try NLL/cross entropy instead (with and without log pre-processing to see the effect of gaussian data distribution)
+    loss = tf.losses.mean_squared_error(y, pred) # TODO: try tf.losses.huber_loss instead
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
     tf.summary.scalar('mse_loss', loss)
     # Create model saver
     saver = tf.train.Saver()
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-    return loss, optimizer, (X, y, dropout_keep_prob), saver, init_op
+    return pred, loss, optimizer, (X, y, dropout_keep_prob), saver, init_op
 
-def train(model, dataset, epochs, hyperparameters, save_dir=None):
+def train(model, dataset, epochs, hyperparameters, save_dir=None, predset=None):
     # Unpack parameters
     train_data, test_data, train_targets, test_targets = dataset
-    loss, optimizer, placeholders, saver, init_op = model
+    pred, loss, optimizer, placeholders, saver, init_op = model
     X, y, dropout_keep_prob = placeholders
     # Start tensorlfow session
     config = tf.ConfigProto()
@@ -143,15 +146,22 @@ def train(model, dataset, epochs, hyperparameters, save_dir=None):
                     summary_writer.add_summary(summary, epoch)
                 else:
                     last_loss = sess.run(loss, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
-                print("Epoch=%03d/%03d, last_loss=%.8f (rmse=%.6f)" % (epoch, epochs, last_loss, math.sqrt(last_loss)))
+                test_mse = sess.run(loss, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
+                print("Epoch=%03d/%03d, last_loss=%.6f (rmse=%.6f), test_mse=%.6f (rmse=%.6f)" % (epoch, epochs, last_loss, math.sqrt(last_loss), test_mse, math.sqrt(test_mse)))
         # Calculate test MSE
         print("Training done, testing...")
-        test_mse = sess.run(loss, feed_dict={X: test_data, y: test_targets, dropout_keep_prob:1.})
+        test_mse = sess.run(loss, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
         print("test_mse=%.8f (rmse=%.4f)" % (test_mse, math.sqrt(test_mse)))
         # Save model
         if save_dir is not None:
             print('Saving model...')
             saver.save(sess, save_dir, global_step=epoch)
+        if predset is not None:
+            print('Applying trained model on prediction set')
+            predictions = []
+            for batch in np.array_split(predset, len(predset) // hyperparameters['batch_size']):
+                predictions.extend(sess.run(pred, feed_dict={X: batch, dropout_keep_prob: 1.}).flatten())
+            return test_mse, predictions
         return test_mse
 
 def main():
@@ -164,7 +174,7 @@ def main():
     pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
 
     # Parse and preprocess data
-    features, predset, dataset = load_data(train_set_path, pred_set_path)
+    features, (pred_ids, predset), dataset = load_data(train_set_path, pred_set_path)
 
     # Build model
     hyperparameters = DEFAULT_HYPERPARAMETERS
@@ -172,7 +182,12 @@ def main():
 
     # Train model
     print('Model built, starting training.')
-    train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir)
+    test_mse, predictions = train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir, predset)
+
+    # Save predictions to csv file for Kaggle submission
+    predictions = np.int32(np.round(np.exp(predictions))) - 1
+    predictions = [p if p < 5000 else 5000 for p in predictions] # TODO: temporary, correct explosing values problem
+    pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, 'preds.csv'), index=False)
 
 if __name__ == '__main__':
     main()
