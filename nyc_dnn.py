@@ -6,7 +6,6 @@ but we prefer to define model by hand here to learn more about tensorflow python
 
 TODO:
     * try batch normalization
-    * try to train deeper models on more data
     * try to dicretize trip_duration and use softmax layer for classification instead of a regression with linear output
     * determine whether if cross validation could improve accuracy
 
@@ -22,7 +21,7 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'lr': 0.00003869398376828445, 'depth': 9, 'dropout_keep_prob': 0.64893328427820518, 'hidden_size': 512, 'batch_size': 512, 'weight_std_dev': 0.10134450718453812}
+DEFAULT_HYPERPARAMETERS = {'lr': 0.00004984802990444893, 'depth': 6, 'dropout_keep_prob': 0.69774888785056466, 'hidden_size': 512, 'batch_size': 256, 'weight_std_dev': 0.065860021996056478}
 TRAINING_EPOCHS = 250
 DISPLAY_STEP_PREDIOD = 2
 ALLOW_GPU_MEM_GROWTH = True
@@ -60,7 +59,7 @@ def load_data(train_path, test_path):
     predset['store_and_fwd_flag'], _ = pd.factorize(predset['store_and_fwd_flag'])
     # Process harversine distance from longitudes and latitudes
     trainset['radial_distance'] = _haversine_np(trainset.pickup_longitude, trainset.pickup_latitude, trainset.dropoff_longitude, trainset.dropoff_latitude)
-    predset['radial_distance'] = _haversine_np(predset.pickup_longitude, predset.pickup_latitude, trainset.dropoff_longitude, predset.dropoff_latitude)
+    predset['radial_distance'] = _haversine_np(predset.pickup_longitude, predset.pickup_latitude, predset.dropoff_longitude, predset.dropoff_latitude)
     # Transform target trip durations to log(trip durations) (permits to get a gaussian distribution of trip_durations, see data exploration notebook)
     trainset['trip_duration'] = np.log(trainset['trip_duration'] + 1)
     # Remove unused columns and split input feature columns from target column
