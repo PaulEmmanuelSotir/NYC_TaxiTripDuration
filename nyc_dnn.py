@@ -6,8 +6,7 @@ but we prefer to define model by hand here to learn more about tensorflow python
 
 TODO:
     * try batch normalization
-    * try to dicretize trip_duration and use softmax layer for classification instead of a regression with linear output
-    * determine whether if cross validation could improve accuracy
+    * save best performing model on test set instead of last one
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
@@ -21,7 +20,14 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'lr': 0.00004984802990444893, 'depth': 6, 'dropout_keep_prob': 0.69774888785056466, 'hidden_size': 512, 'batch_size': 256, 'weight_std_dev': 0.065860021996056478}
+DEFAULT_HYPERPARAMETERS = {'lr': 0.00004984802990444893,
+                           'depth': 6,
+                           'dropout_keep_prob': 0.69774888785056466,
+                           'hidden_size': 512,
+                           'batch_size': 256,
+                           'weight_std_dev': 0.065860021996056478,
+                           'duration_resolution': 512,
+                           'duration_std_margin': 4}
 TRAINING_EPOCHS = 250
 DISPLAY_STEP_PREDIOD = 2
 ALLOW_GPU_MEM_GROWTH = True
@@ -36,6 +42,24 @@ def _haversine_np(lon1, lat1, lon2, lat2):
     c = 2 * np.arcsin(np.sqrt(a))
     km = 6367 * c
     return km
+
+def _softmax_to_duration(softmax, std, mean, duration_std_margin, duration_resolution):
+    """ Inverse logistic function (logit function) """
+    min_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
+    max_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
+    mean_indice = tf.reduce_mean(softmax * tf.range(0., duration_resolution, dtype=tf.float32))
+    x = (1 - mean_indice/duration_resolution) * (max_x - min_x) + min_x
+    return tf.log(x / (1 - x)) + mean
+
+"""
+def _discretize_duration(y, std, mean, duration_std_margin, duration_resolution):
+    min_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
+    max_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
+    vals = tf.exp(tf.reshape(y, [-1]) - mean)
+    indices = ((min_x - vals / (1. + vals)) / (max_x - min_x) + 1.) * duration_resolution
+    indices = tf.clip_by_value(indices, 0., duration_resolution)
+    return tf.cast(tf.round(indices), tf.int32)
+"""
 
 def load_data(train_path, test_path):
     trainset = pd.read_csv(train_path)
@@ -55,26 +79,28 @@ def load_data(train_path, test_path):
     _preprocess_date(predset, 'pickup_datetime')
     _preprocess_date(trainset, 'dropoff_datetime', vectorize=False)
     # Vectorize flags
-    trainset['store_and_fwd_flag'], _ = pd.factorize(trainset['store_and_fwd_flag'])
-    predset['store_and_fwd_flag'], _ = pd.factorize(predset['store_and_fwd_flag'])
+    trainset.store_and_fwd_flag, _ = pd.factorize(trainset.store_and_fwd_flag)
+    predset.store_and_fwd_flag, _ = pd.factorize(predset.store_and_fwd_flag)
     # Process harversine distance from longitudes and latitudes
-    trainset['radial_distance'] = _haversine_np(trainset.pickup_longitude, trainset.pickup_latitude, trainset.dropoff_longitude, trainset.dropoff_latitude)
-    predset['radial_distance'] = _haversine_np(predset.pickup_longitude, predset.pickup_latitude, predset.dropoff_longitude, predset.dropoff_latitude)
+    trainset.radial_distance = _haversine_np(trainset.pickup_longitude, trainset.pickup_latitude, trainset.dropoff_longitude, trainset.dropoff_latitude)
+    predset.radial_distanc = _haversine_np(predset.pickup_longitude, predset.pickup_latitude, predset.dropoff_longitude, predset.dropoff_latitude)
     # Transform target trip durations to log(trip durations) (permits to get a gaussian distribution of trip_durations, see data exploration notebook)
-    trainset['trip_duration'] = np.log(trainset['trip_duration'] + 1)
-    # Remove unused columns and split input feature columns from target column
+    targets = np.log(trainset.trip_duration + 1).values.reshape([-1, 1])
+    # Get trip duration mean and std dev for duration discretization
+    mean, std = np.mean(targets), np.std(targets)
+    # Remove unused feature columns
     features = [key for key in trainset.keys().intersection(predset.keys()) if key != 'id' and key != 'pickup_datetime']
-    targets, data = trainset['trip_duration'].get_values().reshape([-1, 1]), trainset[features].get_values()
-    return features, (predset['id'], predset[features].get_values()), train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+    data = trainset[features].get_values()
+    return features, (predset['id'], predset[features].get_values()), train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE), (std, mean)
 
 def _mlp(X, weights, biases, dropout_keep_prob):
     layers = [tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
     for w, b in zip(weights[1:-1], biases[1:-1]):
         layers.append(tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob))
-    out = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='output')
-    return out
-    
-def build_model(n_input, depth, hidden_size, weight_std_dev, learning_rate):
+    logits = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='output')
+    return logits
+
+def build_model(n_input, hyperparameters, target_std, target_mean):
     # Define placeholders
     X = tf.placeholder(tf.float32, [None, n_input], name='X')
     y = tf.placeholder(tf.float32, [None, 1], name='y')
@@ -82,32 +108,35 @@ def build_model(n_input, depth, hidden_size, weight_std_dev, learning_rate):
 
     with tf.name_scope('mlp'):
         # Define MLP weights and biases variables
+        target_std, target_mean = tf.constant(target_std, dtype=tf.float32), tf.constant(target_mean, dtype=tf.float32)
+        hidden_size, weight_std_dev, resolution, std_margin = hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], tf.constant(hyperparameters['duration_resolution'], dtype=tf.float32), tf.constant(hyperparameters['duration_std_margin'], dtype=tf.float32)
         weights = [tf.Variable(tf.random_normal([n_input, hidden_size], stddev=weight_std_dev), name='w1')]
         biases = [tf.Variable(tf.random_normal([hidden_size]), name='b1')]
-        for i in range(1, depth-1):
+        for i in range(1, hyperparameters['depth'] - 1):
             weights.append(tf.Variable(tf.random_normal([hidden_size, hidden_size], stddev=weight_std_dev), name='w' + str(i)))
             biases.append(tf.Variable(tf.random_normal([hidden_size]), name='b' + str(i)))
-        weights.append(tf.Variable(tf.random_normal([hidden_size, 1], stddev=weight_std_dev), name='w_out'))
+        weights.append(tf.Variable(tf.random_normal([hidden_size, hyperparameters['duration_resolution']], stddev=weight_std_dev), name='w_out'))
         biases.append(tf.Variable(tf.random_normal([1]), name='b_out'))
         # Build fully connected layers
-        pred = _mlp(X, weights, biases, dropout_keep_prob)
+        logits = _mlp(X, weights, biases, dropout_keep_prob)
     # Add variables to summary
     for v in [*biases, *weights]:
         tf.summary.histogram(v.name, v)
     # Define loss and optimizer
-    loss = tf.losses.mean_squared_error(y, pred) # TODO: try tf.losses.huber_loss instead
-    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
-    tf.summary.scalar('mse_loss', loss)
+    pred = _softmax_to_duration(tf.nn.softmax(logits), target_std, target_mean, std_margin, resolution)
+    rmse = tf.sqrt(tf.losses.mean_squared_error(y, tf.reshape(pred, [-1, 1])))
+    optimizer = tf.train.AdamOptimizer(learning_rate=hyperparameters['lr']).minimize(rmse)
+    tf.summary.scalar('rmse', rmse)
     # Create model saver
     saver = tf.train.Saver()
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-    return pred, loss, optimizer, (X, y, dropout_keep_prob), saver, init_op
+    return pred, rmse, optimizer, (X, y, dropout_keep_prob), saver, init_op
 
 def train(model, dataset, epochs, hyperparameters, save_dir=None, predset=None):
     # Unpack parameters
     train_data, test_data, train_targets, test_targets = dataset
-    pred, loss, optimizer, placeholders, saver, init_op = model
+    pred, rmse, optimizer, placeholders, saver, init_op = model
     X, y, dropout_keep_prob = placeholders
     # Start tensorlfow session
     config = tf.ConfigProto()
@@ -134,16 +163,16 @@ def train(model, dataset, epochs, hyperparameters, save_dir=None, predset=None):
             # Display progress
             if epoch % DISPLAY_STEP_PREDIOD == 0:
                 if save_dir is not None:
-                    summary, last_loss = sess.run([summary_op, loss], feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
+                    summary, last_loss = sess.run([summary_op, rmse], feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
                     summary_writer.add_summary(summary, epoch)
                 else:
-                    last_loss = sess.run(loss, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
-                test_mse = sess.run(loss, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
-                print("Epoch=%03d/%03d, last_loss=%.6f (rmse=%.6f), test_mse=%.6f (rmse=%.6f)" % (epoch, epochs, last_loss, math.sqrt(last_loss), test_mse, math.sqrt(test_mse)))
-        # Calculate test MSE
+                    last_loss = sess.run(rmse, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
+                test_rmse = sess.run(rmse, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
+                print("Epoch=%03d/%03d, last_loss=%.6f, test_rmse=%.6f" % (epoch, epochs, last_loss, test_rmse))
+        # Calculate test RMSE
         print("Training done, testing...")
-        test_mse = sess.run(loss, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
-        print("test_mse=%.8f (rmse=%.4f)" % (test_mse, math.sqrt(test_mse)))
+        test_rmse = sess.run(rmse, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
+        print("test_rmse=%.8f" % (test_rmse))
         # Save model
         if save_dir is not None:
             print('Saving model...')
@@ -153,8 +182,8 @@ def train(model, dataset, epochs, hyperparameters, save_dir=None, predset=None):
             predictions = []
             for batch in np.array_split(predset, len(predset) // hyperparameters['batch_size']):
                 predictions.extend(sess.run(pred, feed_dict={X: batch, dropout_keep_prob: 1.}).flatten())
-            return test_mse, predictions
-        return test_mse
+            return test_rmse, predictions
+        return test_rmse
 
 def main():
     # Parse cmd arguments
@@ -166,19 +195,19 @@ def main():
     pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
 
     # Parse and preprocess data
-    features, (pred_ids, predset), dataset = load_data(train_set_path, pred_set_path)
+    features, (pred_ids, predset), dataset, (target_std, target_mean) = load_data(train_set_path, pred_set_path)
 
     # Build model
     hyperparameters = DEFAULT_HYPERPARAMETERS
-    model = build_model(len(features), hyperparameters['depth'], hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], hyperparameters['lr'])
+    model = build_model(len(features), hyperparameters, target_std, target_mean)
 
     # Train model
     print('Model built, starting training.')
-    test_mse, predictions = train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir, predset)
+    test_rmse, predictions = train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir, predset)
 
     # Save predictions to csv file for Kaggle submission
     predictions = np.int32(np.round(np.exp(predictions))) - 1
-    predictions = [p if p < 5000 else 5000 for p in predictions] # TODO: temporary, correct explosing values problem
+    predictions = [p if p < 5000 else 5000 for p in predictions] # TODO: temporary, correct exploding values problem
     pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, 'preds.csv'), index=False)
 
 if __name__ == '__main__':
