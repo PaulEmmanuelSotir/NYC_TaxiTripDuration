@@ -6,6 +6,7 @@ but we prefer to define model by hand here to learn more about tensorflow python
 
 TODO:
     * try batch normalization
+    * try xavier initialization
     * save best performing model on test set instead of last one
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
@@ -16,16 +17,17 @@ import argparse
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'lr': 0.00004984802990444893,
+DEFAULT_HYPERPARAMETERS = {'lr': 8e-5,
                            'depth': 6,
-                           'dropout_keep_prob': 0.69774888785056466,
+                           'dropout_keep_prob': 0.7,
                            'hidden_size': 512,
                            'batch_size': 256,
-                           'weight_std_dev': 0.065860021996056478,
+                           'weight_std_dev': 0.1,
                            'duration_resolution': 512,
                            'duration_std_margin': 4}
 TRAINING_EPOCHS = 250
@@ -45,11 +47,12 @@ def _haversine_np(lon1, lat1, lon2, lat2):
 
 def _softmax_to_duration(softmax, std, mean, duration_std_margin, duration_resolution):
     """ Inverse logistic function (logit function) """
-    min_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
-    max_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
-    mean_indice = tf.reduce_mean(softmax * tf.range(0., duration_resolution, dtype=tf.float32))
-    x = (1 - mean_indice/duration_resolution) * (max_x - min_x) + min_x
-    return tf.log(x / (1 - x)) + mean
+    max_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
+    min_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
+    mean_indice = tf.reduce_mean(tf.multiply(softmax, tf.range(0., duration_resolution, dtype=tf.float32)), axis=1) # TODO: make sure ignoring first softmax output (multiplied by 0) isn't a problem
+    x = mean_indice * (max_x - min_x) + min_x
+    pred = tf.log(x / (1 - x)) + mean
+    return pred
 
 """
 def _discretize_duration(y, std, mean, duration_std_margin, duration_resolution):
@@ -91,12 +94,20 @@ def load_data(train_path, test_path):
     # Remove unused feature columns
     features = [key for key in trainset.keys().intersection(predset.keys()) if key != 'id' and key != 'pickup_datetime']
     data = trainset[features].get_values()
-    return features, (predset['id'], predset[features].get_values()), train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE), (std, mean)
+    # Split dataset into trainset and testset
+    train_data, test_data, train_targets, test_targets = train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+    # Normalize feature columns
+    standardizer = preprocessing.StandardScaler()
+    train_data = standardizer.fit_transform(train_data)
+    test_data = standardizer.transform(test_data)
+    return features, (predset['id'], predset[features].get_values()), (train_data, test_data, train_targets, test_targets), (std, mean)
 
-def _mlp(X, weights, biases, dropout_keep_prob):
+def _dnn(X, weights, biases, dropout_keep_prob):
     layers = [tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
     for w, b in zip(weights[1:-1], biases[1:-1]):
-        layers.append(tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob))
+        dense = tf.nn.dropout(tf.nn.tanh(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob)
+        dense_bn = tf.layers.batch_normalization(dense)
+        layers.append(dense_bn)
     logits = tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='output')
     return logits
 
@@ -106,7 +117,7 @@ def build_model(n_input, hyperparameters, target_std, target_mean):
     y = tf.placeholder(tf.float32, [None, 1], name='y')
     dropout_keep_prob = tf.placeholder(tf.float32, name='dropout_keep_prob')
 
-    with tf.name_scope('mlp'):
+    with tf.name_scope('dnn'):
         # Define MLP weights and biases variables
         target_std, target_mean = tf.constant(target_std, dtype=tf.float32), tf.constant(target_mean, dtype=tf.float32)
         hidden_size, weight_std_dev, resolution, std_margin = hyperparameters['hidden_size'], hyperparameters['weight_std_dev'], tf.constant(hyperparameters['duration_resolution'], dtype=tf.float32), tf.constant(hyperparameters['duration_std_margin'], dtype=tf.float32)
@@ -118,7 +129,7 @@ def build_model(n_input, hyperparameters, target_std, target_mean):
         weights.append(tf.Variable(tf.random_normal([hidden_size, hyperparameters['duration_resolution']], stddev=weight_std_dev), name='w_out'))
         biases.append(tf.Variable(tf.random_normal([1]), name='b_out'))
         # Build fully connected layers
-        logits = _mlp(X, weights, biases, dropout_keep_prob)
+        logits = _dnn(X, weights, biases, dropout_keep_prob)
     # Add variables to summary
     for v in [*biases, *weights]:
         tf.summary.histogram(v.name, v)
@@ -207,7 +218,6 @@ def main():
 
     # Save predictions to csv file for Kaggle submission
     predictions = np.int32(np.round(np.exp(predictions))) - 1
-    predictions = [p if p < 5000 else 5000 for p in predictions] # TODO: temporary, correct exploding values problem
     pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, 'preds.csv'), index=False)
 
 if __name__ == '__main__':

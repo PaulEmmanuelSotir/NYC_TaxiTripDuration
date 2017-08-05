@@ -25,7 +25,7 @@ SUB_TRAINSET_SIZE = 0.1
 # Hyperparameter optimization space and algorithm
 MAX_EVALS = 100
 OPT_ALGO = ho.tpe.suggest
-HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-6), math.log(1e-2)),
+HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(5e-6), math.log(1e-2)),
             'depth': ho.hp.quniform('depth', 6, 9, 1),
             'batch_size': ho.hp.choice('batch_size', [128, 256, 512]),
             'hidden_size': ho.hp.choice('hidden_size', [64, 128, 256, 512, 1024]),
