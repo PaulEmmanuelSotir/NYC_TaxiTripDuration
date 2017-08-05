@@ -6,6 +6,8 @@ but we prefer to define model by hand here to learn more about tensorflow python
 
 TODO:
     * save best performing model instead of last one
+    * test model without softmax regression but with batch norm. to compare rmse with softmax regression model
+    * fight test set overfitting
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
@@ -22,11 +24,10 @@ __all__ = ['load_data', 'build_model', 'train']
 
 DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 5, 'depth': 9, 'lr': 0.0003, 'duration_resolution': 256, 'batch_size': 512, 'dropout_keep_prob': 0.737, 'activation': tf.nn.tanh}
 
-TRAINING_EPOCHS = 180
+TEST_SIZE = 0.07
+TRAINING_EPOCHS = 20
 DISPLAY_STEP_PREDIOD = 2
 ALLOW_GPU_MEM_GROWTH = True
-TEST_SIZE = 0.07
-RANDOM_STATE = 100 # Random state for train_test_split
 
 def _xavier_init(fan_in, fan_out):
     return tf.random_normal([fan_in, fan_out], stddev=math.sqrt(3. / (fan_in + fan_out)))
@@ -74,7 +75,7 @@ def load_data(train_path, test_path):
     features = [key for key in trainset.keys().intersection(predset.keys()) if key != 'id' and key != 'pickup_datetime']
     data = trainset[features].get_values()
     # Split dataset into trainset and testset
-    train_data, test_data, train_targets, test_targets = train_test_split(data, targets, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+    train_data, test_data, train_targets, test_targets = train_test_split(data, targets, test_size=TEST_SIZE)
     # Normalize feature columns
     standardizer = preprocessing.StandardScaler()
     train_data = standardizer.fit_transform(train_data)
@@ -139,7 +140,7 @@ def train(model, dataset, epochs, hp, save_dir=None, predset=None):
         if save_dir is not None:
             summary_op = tf.summary.merge_all()
             summary_writer = tf.summary.FileWriter(save_dir, sess.graph)
-            summary_test_writer = tf.summary.FileWriter(save_dir, sess.graph)
+            summary_test_writer = tf.summary.FileWriter(os.path.join(save_dir, 'test_rmse'), sess.graph)
 
         # Training loop
         for epoch in range(epochs):

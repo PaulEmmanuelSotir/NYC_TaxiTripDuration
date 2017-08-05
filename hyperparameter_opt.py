@@ -18,11 +18,11 @@ import math
 
 import nyc_dnn
 
-TRAINING_EPOCHS = 100
-SUB_TRAINSET_SIZE = 0.1
+TRAINING_EPOCHS = 20
+SUB_TRAINSET_SIZE = 1.
 
 # Hyperparameter optimization space and algorithm
-MAX_EVALS = 100
+MAX_EVALS = 50
 OPT_ALGO = ho.tpe.suggest
 HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(5e-6), math.log(1e-3)),
             'depth': ho.hp.choice('depth', [7, 8, 9]),
@@ -61,7 +61,7 @@ def main():
         model = nyc_dnn.build_model(len(features), hyperparameters, target_std, target_mean)
         # Train model
         model_save_dir = save_dir + str(eval_count) + '/'
-        test_rmse = nyc_dnn.train(model, dataset, TRAINING_EPOCHS, hyperparameters, model_save_dir)
+        test_rmse = nyc_dnn.train(model, dataset, TRAINING_EPOCHS, hyperparameters, model_save_dir, predset)
         return {'loss': test_rmse, # TODO: put last batch average loss here?
                 'true_loss': test_rmse,
                 'status': ho.STATUS_OK,
