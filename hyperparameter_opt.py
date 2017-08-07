@@ -11,10 +11,12 @@ TODO:
 from sklearn.utils import resample
 import tensorflow as tf
 import hyperopt as ho
+import pandas as pd
 import numpy as np
 import argparse
 import time
 import math
+import os
 
 import nyc_dnn
 
@@ -43,7 +45,7 @@ def main():
     pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
 
     # Load data and sample a subset of trainset
-    features, predset, dataset, (target_std, target_mean) = nyc_dnn.load_data(train_set_path, pred_set_path)
+    features, (pred_ids, predset), dataset, (target_std, target_mean) = nyc_dnn.load_data(train_set_path, pred_set_path)
     train_data, test_data, train_targets, test_targets = dataset
     train_data, train_targets = resample(train_data, train_targets, replace=False, n_samples=int(SUB_TRAINSET_SIZE * len(train_data)))
     dataset = (train_data, test_data, train_targets, test_targets)
@@ -61,7 +63,10 @@ def main():
         model = nyc_dnn.build_model(len(features), hyperparameters, target_std, target_mean)
         # Train model
         model_save_dir = save_dir + str(eval_count) + '/'
-        test_rmse = nyc_dnn.train(model, dataset, TRAINING_EPOCHS, hyperparameters, model_save_dir, predset)
+        test_rmse, predictions = nyc_dnn.train(model, dataset, TRAINING_EPOCHS, hyperparameters, model_save_dir, predset)
+        # Save predictions to csv file for Kaggle submission
+        predictions = np.int32(np.round(np.exp(predictions))) - 1
+        pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, str(eval_count), 'preds.csv'), index=False)
         return {'loss': test_rmse, # TODO: put last batch average loss here?
                 'true_loss': test_rmse,
                 'status': ho.STATUS_OK,

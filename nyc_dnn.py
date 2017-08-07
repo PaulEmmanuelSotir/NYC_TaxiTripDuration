@@ -7,7 +7,6 @@ but we prefer to define model by hand here to learn more about tensorflow python
 TODO:
     * save best performing model instead of last one
     * test model without softmax regression but with batch norm. to compare rmse with softmax regression model
-    * fight test set overfitting
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
@@ -22,7 +21,7 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 5, 'depth': 9, 'lr': 0.0003, 'duration_resolution': 256, 'batch_size': 512, 'dropout_keep_prob': 0.737, 'activation': tf.nn.tanh}
+DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 6, 'depth': 9, 'lr': 0.0003, 'duration_resolution': 512, 'batch_size': 512, 'dropout_keep_prob': 0.737, 'activation': tf.nn.tanh}
 
 TEST_SIZE = 0.07
 TRAINING_EPOCHS = 20
@@ -48,10 +47,6 @@ def _softmax_to_duration(softmax, std, mean, duration_std_margin, duration_resol
 def load_data(train_path, test_path):
     trainset = pd.read_csv(train_path)
     predset = pd.read_csv(test_path)
-
-    # Remove outliers (huge trip durations)
-    q = trainset.trip_duration.quantile(0.998)
-    trainset = trainset[trainset.trip_duration < q]
 
     # Parse and vectorize dates
     def _preprocess_date(dataset, field):
@@ -207,6 +202,7 @@ if __name__ == '__main__':
     main()
 
 """
+TODO: try cross entropy loss...
 def _discretize_duration(y, std, mean, duration_std_margin, duration_resolution):
     min_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
     max_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
