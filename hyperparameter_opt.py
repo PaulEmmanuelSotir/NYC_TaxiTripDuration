@@ -20,20 +20,21 @@ import os
 
 import nyc_dnn
 
-TRAINING_EPOCHS = 20
+TRAINING_EPOCHS = 30
 SUB_TRAINSET_SIZE = 1.
 
 # Hyperparameter optimization space and algorithm
 MAX_EVALS = 50
 OPT_ALGO = ho.tpe.suggest
-HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(5e-6), math.log(1e-3)),
-            'depth': ho.hp.choice('depth', [7, 8, 9]),
-            'activation': ho.hp.choice('activation', [tf.nn.tanh, tf.nn.relu, tf.nn.elu]),
-            'batch_size': ho.hp.choice('batch_size', [256, 512, 1024]),
-            'hidden_size': ho.hp.choice('hidden_size', [128, 256, 512, 1024]),
-            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.5, 1.),
-            'duration_std_margin': ho.hp.choice('duration_std_margin', [3, 4, 5]),
-            'duration_resolution': ho.hp.choice('duration_resolution', [128, 256, 512, 1024])}
+HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-5), math.log(4e-3)),
+            'depth': ho.hp.choice('depth', [8, 9, 10, 11]),
+            'activation': ho.hp.choice('activation', [tf.nn.tanh]),
+            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048]),
+            'hidden_size': ho.hp.choice('hidden_size', [256, 512, 1024]),
+            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.65, 1.),
+            'duration_std_margin': ho.hp.choice('duration_std_margin', [4, 5, 6]),
+            'duration_resolution': ho.hp.choice('duration_resolution', [128, 256, 512]),
+            'use_batch_norm': ho.hp.choice('use_batch_norm', [True, False])}
 
 def main():
     # Parse cmd arguments

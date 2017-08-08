@@ -7,6 +7,7 @@ but we prefer to define model by hand here to learn more about tensorflow python
 TODO:
     * save best performing model instead of last one
     * test model without softmax regression but with batch norm. to compare rmse with softmax regression model
+    * try residual blocks on deeper architecture
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
@@ -21,10 +22,10 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 6, 'depth': 9, 'lr': 0.0003, 'duration_resolution': 512, 'batch_size': 512, 'dropout_keep_prob': 0.737, 'activation': tf.nn.tanh}
+DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 5, 'depth': 9, 'lr': 0.00044, 'duration_resolution': 256, 'batch_size': 16*1024, 'dropout_keep_prob': 0.976, 'activation': tf.nn.tanh, 'use_batch_norm': True}
 
 TEST_SIZE = 0.07
-TRAINING_EPOCHS = 20
+TRAINING_EPOCHS = 200
 DISPLAY_STEP_PREDIOD = 2
 ALLOW_GPU_MEM_GROWTH = True
 
@@ -78,12 +79,13 @@ def load_data(train_path, test_path):
     pred_data = standardizer.transform(predset[features].get_values())
     return features, (predset['id'], pred_data), (train_data, test_data, train_targets, test_targets), (std, mean)
 
-def _dnn(X, weights, biases, dropout_keep_prob, activation):
+def _dnn(X, weights, biases, dropout_keep_prob, activation, use_batch_norm):
     layers = [tf.nn.dropout(activation(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
     for w, b in zip(weights[1:-1], biases[1:-1]):
         dense = tf.nn.dropout(activation(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob)
-        dense_bn = tf.layers.batch_normalization(dense)
-        layers.append(dense_bn)
+        if use_batch_norm:
+            dense = tf.layers.batch_normalization(dense)
+        layers.append(dense)
     return tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='logits')
 
 def build_model(n_input, hp, target_std, target_mean):
@@ -105,7 +107,7 @@ def build_model(n_input, hp, target_std, target_mean):
         weights.append(tf.Variable(_xavier_init(hidden_size, hp['duration_resolution']), name='w_out'))
         biases.append(tf.Variable(tf.random_normal([1]), name='b_out'))
         # Build fully connected layers
-        logits = _dnn(X, weights, biases, dropout_keep_prob, hp['activation'])
+        logits = _dnn(X, weights, biases, dropout_keep_prob, hp['activation'], hp['use_batch_norm'])
 
     # Define loss and optimizer
     pred = _softmax_to_duration(tf.nn.softmax(logits), target_std, target_mean, std_margin, resolution)
@@ -138,7 +140,7 @@ def train(model, dataset, epochs, hp, save_dir=None, predset=None):
             summary_test_writer = tf.summary.FileWriter(os.path.join(save_dir, 'test_rmse'), sess.graph)
 
         # Training loop
-        for epoch in range(epochs):
+        for epoch in range(1, epochs):
             batch_count = len(train_data) // hp['batch_size']
             for _ in range(batch_count):
                 indices = np.random.randint(len(train_data), size=hp['batch_size'])
