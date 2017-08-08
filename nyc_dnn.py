@@ -20,9 +20,11 @@ import tensorflow as tf
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 
+import utils
+
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 5, 'depth': 9, 'lr': 0.00044, 'duration_resolution': 256, 'batch_size': 16*1024, 'dropout_keep_prob': 0.976, 'activation': tf.nn.tanh, 'use_batch_norm': True}
+DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 5, 'depth': 9, 'lr': 0.00044, 'duration_resolution': 256, 'batch_size': 4*1024, 'dropout_keep_prob': 0.976, 'activation': tf.nn.tanh, 'use_batch_norm': True}
 
 TEST_SIZE = 0.07
 TRAINING_EPOCHS = 200
@@ -94,18 +96,24 @@ def build_model(n_input, hp, target_std, target_mean):
     y = tf.placeholder(tf.float32, [None, 1], name='y')
     dropout_keep_prob = tf.placeholder(tf.float32, name='dropout_keep_prob')
 
-    with tf.name_scope('dnn'):
+    with tf.variable_scope('dnn'):
         # Declare tensorflow constants (hyperparameters)
         target_std, target_mean = tf.constant(target_std, dtype=tf.float32), tf.constant(target_mean, dtype=tf.float32)
         hidden_size, resolution, std_margin = hp['hidden_size'], tf.constant(hp['duration_resolution'], dtype=tf.float32), tf.constant(hp['duration_std_margin'], dtype=tf.float32)
         # Define DNN weight and bias variables
-        weights = [tf.Variable(_xavier_init(n_input, hidden_size), name='w1')]
-        biases = [tf.Variable(tf.random_normal([hidden_size]), name='b1')]
+        with tf.name_scope('input_layer'):
+            weights = [tf.Variable(_xavier_init(n_input, hidden_size), name='w1')]
+            utils.visualize_weights(weights[0], name='input_weights')
+            biases = [tf.Variable(tf.random_normal([hidden_size]), name='b1')]
         for i in range(1, hp['depth'] - 1):
-            weights.append(tf.Variable(_xavier_init(hidden_size, hidden_size), name='w' + str(i)))
-            biases.append(tf.Variable(tf.random_normal([hidden_size]), name='b' + str(i)))
-        weights.append(tf.Variable(_xavier_init(hidden_size, hp['duration_resolution']), name='w_out'))
-        biases.append(tf.Variable(tf.random_normal([1]), name='b_out'))
+            with tf.name_scope('layer' + str(i)):
+                weights.append(tf.Variable(_xavier_init(hidden_size, hidden_size), name='weights'))
+                biases.append(tf.Variable(tf.random_normal([hidden_size]), name='bias'))
+                utils.visualize_weights(weights[-1], name='weights' + str(i))
+        with tf.name_scope('ouput_layer'):
+            weights.append(tf.Variable(_xavier_init(hidden_size, hp['duration_resolution']), name='weights'))
+            biases.append(tf.Variable(tf.random_normal([1]), name='bias'))
+            utils.visualize_weights(weights[-1], name='output_weights')
         # Build fully connected layers
         logits = _dnn(X, weights, biases, dropout_keep_prob, hp['activation'], hp['use_batch_norm'])
 
