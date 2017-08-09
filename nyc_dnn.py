@@ -24,10 +24,19 @@ import utils
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'hidden_size': 512, 'duration_std_margin': 5, 'depth': 9, 'lr': 0.00044, 'duration_resolution': 256, 'batch_size': 4*1024, 'dropout_keep_prob': 0.976, 'activation': tf.nn.tanh, 'use_batch_norm': True}
+DEFAULT_HYPERPARAMETERS = {'lr': 0.005,
+                           'lr_decay': 0.5,
+                           'hidden_size': 512,
+                           'batch_size': 4*1024,
+                           'residual_blocks': 3,
+                           'duration_std_margin': 6,
+                           'dropout_keep_prob': 0.78,
+                           'l2_regularization': 0.01,
+                           'duration_resolution': 512,
+                           'activation': tf.nn.tanh}
 
 TEST_SIZE = 0.07
-TRAINING_EPOCHS = 200
+TRAINING_EPOCHS = 300
 DISPLAY_STEP_PREDIOD = 2
 ALLOW_GPU_MEM_GROWTH = True
 
@@ -47,6 +56,22 @@ def _softmax_to_duration(softmax, std, mean, duration_std_margin, duration_resol
     pred = tf.log(x / (1 - x)) + mean
     return pred
 
+def _haversine(lon1, lat1, lon2, lat2):
+    """
+    Calculate the great circle distance between two points 
+    on the earth (specified in decimal degrees).
+    Source: https://gis.stackexchange.com/a/56589/15183
+    """
+    # convert decimal degrees to radians 
+    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
+    # haversine formula 
+    dlon = lon2 - lon1 
+    dlat = lat2 - lat1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a)) 
+    meters = 1000 * 6367 * c
+    return meters
+
 def load_data(train_path, test_path):
     trainset = pd.read_csv(train_path)
     predset = pd.read_csv(test_path)
@@ -63,6 +88,9 @@ def load_data(train_path, test_path):
     # Vectorize flags
     trainset.store_and_fwd_flag, _ = pd.factorize(trainset.store_and_fwd_flag)
     predset.store_and_fwd_flag, _ = pd.factorize(predset.store_and_fwd_flag)
+    # Add haversine distance feature
+    trainset['distance'] = _haversine(trainset.pickup_longitude, trainset.pickup_latitude, trainset.dropoff_longitude, trainset.dropoff_latitude)
+    predset['distance'] = _haversine(predset.pickup_longitude, predset.pickup_latitude, predset.dropoff_longitude, predset.dropoff_latitude)
 
     # Transform target trip durations to log(trip durations + 1) (permits to get a gaussian distribution of trip_durations, see data exploration notebook)
     targets = np.log(trainset.trip_duration + 1).values.reshape([-1, 1])
@@ -81,14 +109,17 @@ def load_data(train_path, test_path):
     pred_data = standardizer.transform(predset[features].get_values())
     return features, (predset['id'], pred_data), (train_data, test_data, train_targets, test_targets), (std, mean)
 
-def _dnn(X, weights, biases, dropout_keep_prob, activation, use_batch_norm):
+def _dnn(X, weights, biases, dropout_keep_prob, activation):
     layers = [tf.nn.dropout(activation(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
     for w, b in zip(weights[1:-1], biases[1:-1]):
-        dense = tf.nn.dropout(activation(tf.add(tf.matmul(layers[-1], w), b)), dropout_keep_prob)
-        if use_batch_norm:
-            dense = tf.layers.batch_normalization(dense)
-        layers.append(dense)
-    return tf.add(tf.matmul(layers[-1], weights[-1]), biases[-1], name='logits')
+        # Fully connected residual block
+        input = activation(tf.layers.batch_normalization(layers[-1]))
+        dense1 = tf.nn.dropout(activation(tf.add(tf.matmul(input, w[0]), b[0])), dropout_keep_prob)
+        dense1_bn = tf.layers.batch_normalization(dense1)
+        dense2 = tf.nn.dropout(tf.add(tf.matmul(dense1_bn, w[1]), b[1]), dropout_keep_prob)
+        layers.append(tf.add(dense2, layers[-1]))
+    input = activation(tf.layers.batch_normalization(layers[-1]))
+    return tf.add(tf.matmul(input, weights[-1]), biases[-1], name='logits')
 
 def build_model(n_input, hp, target_std, target_mean):
     # Input placeholders
@@ -101,26 +132,28 @@ def build_model(n_input, hp, target_std, target_mean):
         target_std, target_mean = tf.constant(target_std, dtype=tf.float32), tf.constant(target_mean, dtype=tf.float32)
         hidden_size, resolution, std_margin = hp['hidden_size'], tf.constant(hp['duration_resolution'], dtype=tf.float32), tf.constant(hp['duration_std_margin'], dtype=tf.float32)
         # Define DNN weight and bias variables
-        with tf.name_scope('input_layer'):
-            weights = [tf.Variable(_xavier_init(n_input, hidden_size), name='w1')]
-            utils.visualize_weights(weights[0], name='input_weights')
+        def _create_weights(shape, name):
+            weights = tf.Variable(_xavier_init(*shape), name=name)
+            utils.visualize_weights(weights, name=name)
+            return weights
+        with tf.variable_scope('input_layer'):
+            weights = [_create_weights((n_input, hidden_size), name='weights')]
             biases = [tf.Variable(tf.random_normal([hidden_size]), name='b1')]
-        for i in range(1, hp['depth'] - 1):
-            with tf.name_scope('layer' + str(i)):
-                weights.append(tf.Variable(_xavier_init(hidden_size, hidden_size), name='weights'))
-                biases.append(tf.Variable(tf.random_normal([hidden_size]), name='bias'))
-                utils.visualize_weights(weights[-1], name='weights' + str(i))
-        with tf.name_scope('ouput_layer'):
-            weights.append(tf.Variable(_xavier_init(hidden_size, hp['duration_resolution']), name='weights'))
+        for i in range(1, hp['residual_blocks']):
+            with tf.variable_scope('residual_block' + str(i)):
+                weights.append((_create_weights((hidden_size, hidden_size), name='weights_0'), _create_weights((hidden_size, hidden_size), name='weights_1')))
+                biases.append((tf.Variable(tf.random_normal([hidden_size]), name='bias_0'), tf.Variable(tf.random_normal([hidden_size]), name='bias_1')))
+        with tf.variable_scope('ouput_layer'):
+            weights.append(_create_weights((hidden_size, hp['duration_resolution']), name='weights'))
             biases.append(tf.Variable(tf.random_normal([1]), name='bias'))
-            utils.visualize_weights(weights[-1], name='output_weights')
         # Build fully connected layers
-        logits = _dnn(X, weights, biases, dropout_keep_prob, hp['activation'], hp['use_batch_norm'])
+        logits = _dnn(X, weights, biases, dropout_keep_prob, hp['activation'])
 
     # Define loss and optimizer
     pred = _softmax_to_duration(tf.nn.softmax(logits), target_std, target_mean, std_margin, resolution)
+    l2_regularization = tf.reduce_sum([tf.nn.l2_loss(w) for w in weights])
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, tf.reshape(pred, [-1, 1])))
-    optimizer = tf.train.AdamOptimizer(learning_rate=hp['lr']).minimize(rmse)
+    optimizer = tf.train.AdamOptimizer(learning_rate=hp['lr']).minimize(rmse + hp['l2_regularization'] * l2_regularization)
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
     return pred, rmse, optimizer, (X, y, dropout_keep_prob), tf.train.Saver(), init_op
@@ -148,7 +181,9 @@ def train(model, dataset, epochs, hp, save_dir=None, predset=None):
             summary_test_writer = tf.summary.FileWriter(os.path.join(save_dir, 'test_rmse'), sess.graph)
 
         # Training loop
+        best_rmse = float("inf")
         for epoch in range(1, epochs):
+            hp['lr'] = hp['lr'] * hp['lr_decay'] if (epoch % 5) == 0 else hp['lr']
             batch_count = len(train_data) // hp['batch_size']
             for _ in range(batch_count):
                 indices = np.random.randint(len(train_data), size=hp['batch_size'])
@@ -165,13 +200,17 @@ def train(model, dataset, epochs, hp, save_dir=None, predset=None):
                 else:
                     last_loss = sess.run(rmse, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
                     test_rmse = sess.run(rmse, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
+                if best_rmse >= test_rmse:
+                    best_rmse = test_rmse
+                    if save_dir is not None:
+                        print('Saving model...')
+                        saver.save(sess, save_dir)
                 print("Epoch=%03d/%03d, last_loss=%.6f, test_rmse=%.6f" % (epoch, epochs, last_loss, test_rmse))
-        print("Training done.")
+        print("Training done, best_rmse=%.6f" % best_rmse)
 
-        # Save model
+        # Restore best model and apply prediction
         if save_dir is not None:
-            print('Saving model...')
-            saver.save(sess, save_dir, global_step=epoch)
+            saver.restore(sess, save_dir)
         if predset is not None:
             print('Applying trained model on prediction set')
             predictions = []
