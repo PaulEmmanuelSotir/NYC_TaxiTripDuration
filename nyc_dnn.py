@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 """ NYC Taxi Trip Duration - Kaggle competion
 Note that the code could probably be greatly simplified using tf.train.Supervisor and tf.contrib.learn.dnnregressor,
-but we prefer to define model by hand here to learn more about tensorflow python API.
+but we prefer to define model by hand here to learn more about tensorflow python API (and for more flexibility).
 
 TODO:
-    * save best performing model instead of last one
-    * test model without softmax regression but with batch norm. to compare rmse with softmax regression model
-    * try residual blocks on deeper architecture
+    * use CV
+    * approximate hessian with a meta model and perform newton method to update parameters at each step (reduces the need of hyperparameters like learning rate, ... and may converge faster)
+    * try cross entropy instead of rmsle
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
@@ -24,16 +24,17 @@ import utils
 
 __all__ = ['load_data', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'lr': 0.005,
-                           'lr_decay': 0.5,
+DEFAULT_HYPERPARAMETERS = {'epochs': 300,
+                           'lr': 0.0005,
+                           'opt': {'algo': tf.train.AdamOptimizer},
+                           'depth': 4,
                            'hidden_size': 512,
-                           'batch_size': 4*1024,
-                           'residual_blocks': 3,
+                           'batch_size': 1024,
+                           'early_stopping': 30,
+                           'max_norm_threshold': 1.,
                            'duration_std_margin': 6,
-                           'dropout_keep_prob': 0.78,
-                           'l2_regularization': 0.01,
-                           'duration_resolution': 512,
-                           'activation': tf.nn.tanh}
+                           'dropout_keep_prob': 0.83,
+                           'output_size': 256}
 
 TEST_SIZE = 0.07
 TRAINING_EPOCHS = 300
@@ -43,7 +44,15 @@ ALLOW_GPU_MEM_GROWTH = True
 def _xavier_init(fan_in, fan_out):
     return tf.random_normal([fan_in, fan_out], stddev=math.sqrt(3. / (fan_in + fan_out)))
 
-def _softmax_to_duration(softmax, std, mean, duration_std_margin, duration_resolution):
+def _max_norm_regularizer(threshold, collection):
+    def _max_norm(weights):
+        # Apply max-norm regularization on weights matrix columns
+        clipped = tf.clip_by_norm(weights, clip_norm=threshold, axes=1)
+        clip_weights = tf.assign(weights, clipped, name='max_norm')
+        tf.add_to_collection(collection, clip_weights)
+    return _max_norm
+
+def _softmax_to_duration(softmax, std, mean, duration_std_margin, output_size):
     """ Inverse logistic function (logit function)
     This function is used to convert softmax output layer to a trip duration in a differentiable way so that we can perform softmax regression with L2 loss.
     Each softmax output probability weights a different trip duration value.
@@ -51,7 +60,7 @@ def _softmax_to_duration(softmax, std, mean, duration_std_margin, duration_resol
     """
     max_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
     min_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
-    mean_indice = tf.reduce_mean(tf.multiply(softmax, tf.range(0., duration_resolution, dtype=tf.float32)), axis=1) # TODO: make sure ignoring first softmax output (multiplied by 0) isn't a problem
+    mean_indice = tf.reduce_mean(tf.multiply(softmax, tf.range(0., output_size, dtype=tf.float32)), axis=1)
     x = mean_indice * (max_x - min_x) + min_x
     pred = tf.log(x / (1 - x)) + mean
     return pred
@@ -72,9 +81,9 @@ def _haversine(lon1, lat1, lon2, lat2):
     meters = 1000 * 6367 * c
     return meters
 
-def load_data(train_path, test_path):
-    trainset = pd.read_csv(train_path)
-    predset = pd.read_csv(test_path)
+def load_data(dataset_dir, train_file, test_file, knn_train_file, knn_test_file, knn_pred_file):
+    trainset = pd.read_csv(os.path.join(dataset_dir, train_file))
+    predset = pd.read_csv(os.path.join(dataset_dir, test_file))
 
     # Parse and vectorize dates
     def _preprocess_date(dataset, field):
@@ -107,66 +116,68 @@ def load_data(train_path, test_path):
     train_data = standardizer.fit_transform(train_data)
     test_data = standardizer.transform(test_data)
     pred_data = standardizer.transform(predset[features].get_values())
-    return features, (predset['id'], pred_data), (train_data, test_data, train_targets, test_targets), (std, mean)
 
-def _dnn(X, weights, biases, dropout_keep_prob, activation):
-    layers = [tf.nn.dropout(activation(tf.add(tf.matmul(X, weights[0]), biases[0])), dropout_keep_prob)]
-    for w, b in zip(weights[1:-1], biases[1:-1]):
-        # Fully connected residual block
-        input = activation(tf.layers.batch_normalization(layers[-1]))
-        dense1 = tf.nn.dropout(activation(tf.add(tf.matmul(input, w[0]), b[0])), dropout_keep_prob)
-        dense1_bn = tf.layers.batch_normalization(dense1)
-        dense2 = tf.nn.dropout(tf.add(tf.matmul(dense1_bn, w[1]), b[1]), dropout_keep_prob)
-        layers.append(tf.add(dense2, layers[-1]))
-    input = activation(tf.layers.batch_normalization(layers[-1]))
-    return tf.add(tf.matmul(input, weights[-1]), biases[-1], name='logits')
+    return pred_data.shape[1], (predset['id'], pred_data), (train_data, test_data, train_targets, test_targets), (std, mean)
+def _layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, weights_regularizer=None):
+    with tf.variable_scope(name):
+        weights = tf.Variable(_xavier_init(*shape), name='w')
+        if weights_regularizer is not None:
+            weights_regularizer(weights)
+        bias = tf.Variable(tf.random_normal([shape[1]]), name='b')
+        print(weights.shape)
+        print(x.shape)
+        logits = tf.add(tf.matmul(x, weights), bias)
+        dense = activation(logits) if activation is not None else logits
+        dense_bn = tf.layers.batch_normalization(dense) if batch_norm else dense
+        dense_do = dense_bn if dropout_keep_prob == 1. else tf.nn.dropout(dense_bn, dropout_keep_prob)
+        if summarize:
+            utils.visualize_weights(weights, name='weights')
+            tf.summary.histogram('bias', bias)
+    return dense_do
 
-def build_model(n_input, hp, target_std, target_mean):
+def build_model(n_input, hp, target_std, target_mean, summarize_parameters=True):
     # Input placeholders
     X = tf.placeholder(tf.float32, [None, n_input], name='X')
     y = tf.placeholder(tf.float32, [None, 1], name='y')
+    lr = tf.placeholder(tf.float32, name='lr')
     dropout_keep_prob = tf.placeholder(tf.float32, name='dropout_keep_prob')
 
     with tf.variable_scope('dnn'):
         # Declare tensorflow constants (hyperparameters)
         target_std, target_mean = tf.constant(target_std, dtype=tf.float32), tf.constant(target_mean, dtype=tf.float32)
-        hidden_size, resolution, std_margin = hp['hidden_size'], tf.constant(hp['duration_resolution'], dtype=tf.float32), tf.constant(hp['duration_std_margin'], dtype=tf.float32)
-        # Define DNN weight and bias variables
-        def _create_weights(shape, name):
-            weights = tf.Variable(_xavier_init(*shape), name=name)
-            utils.visualize_weights(weights, name=name)
-            return weights
-        with tf.variable_scope('input_layer'):
-            weights = [_create_weights((n_input, hidden_size), name='weights')]
-            biases = [tf.Variable(tf.random_normal([hidden_size]), name='b1')]
-        for i in range(1, hp['residual_blocks']):
-            with tf.variable_scope('residual_block' + str(i)):
-                weights.append((_create_weights((hidden_size, hidden_size), name='weights_0'), _create_weights((hidden_size, hidden_size), name='weights_1')))
-                biases.append((tf.Variable(tf.random_normal([hidden_size]), name='bias_0'), tf.Variable(tf.random_normal([hidden_size]), name='bias_1')))
-        with tf.variable_scope('ouput_layer'):
-            weights.append(_create_weights((hidden_size, hp['duration_resolution']), name='weights'))
-            biases.append(tf.Variable(tf.random_normal([1]), name='bias'))
-        # Build fully connected layers
-        logits = _dnn(X, weights, biases, dropout_keep_prob, hp['activation'])
+        hidden_size, resolution, std_margin = hp['hidden_size'], tf.constant(hp['output_size'], dtype=tf.float32), tf.constant(hp['duration_std_margin'], dtype=tf.float32)
+        # Define DNN layers
+        wreg = _max_norm_regularizer(hp['max_norm_threshold'], 'max_norm')
+        layer = _layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize_parameters, weights_regularizer=wreg)
+        for i in range(1, hp['depth'] - 1):
+            layer = _layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize_parameters, weights_regularizer=wreg)
+        logits = _layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize_parameters, activation=None, weights_regularizer=wreg)
 
     # Define loss and optimizer
-    pred = _softmax_to_duration(tf.nn.softmax(logits), target_std, target_mean, std_margin, resolution)
-    l2_regularization = tf.reduce_sum([tf.nn.l2_loss(w) for w in weights])
+    normalized_pred = logits if hp['output_size'] == 1 else _softmax_to_duration(tf.nn.softmax(logits), target_std, target_mean, std_margin, resolution)
+    normalized_rmse = tf.sqrt(tf.losses.mean_squared_error((y - target_mean) / target_std, tf.reshape(normalized_pred, [-1, 1])))
+    pred = normalized_pred * target_std + target_mean
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, tf.reshape(pred, [-1, 1])))
-    optimizer = tf.train.AdamOptimizer(learning_rate=hp['lr']).minimize(rmse + hp['l2_regularization'] * l2_regularization)
+    opt_algorithm = hp['opt']['algo']
+    optimizer = opt_algorithm(learning_rate=lr) if opt_algorithm is not tf.train.MomentumOptimizer else opt_algorithm(learning_rate=lr, momentum=hp['opt']['m'])
+    grads_and_vars = optimizer.compute_gradients(normalized_rmse)
+    # Add pred, rmse and gradients to submmary
+    with tf.name_scope('dnn_gradients'):
+        for g, v in grads_and_vars:
+            if g is not None and summarize_parameters:
+                tf.summary.histogram(v.name, g)
+    optimize = optimizer.apply_gradients(grads_and_vars)
+    tf.summary.histogram('pred', pred)
+    tf.summary.scalar('rmse', rmse)
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-    return pred, rmse, optimizer, (X, y, dropout_keep_prob), tf.train.Saver(), init_op
+    return pred, rmse, optimize, (X, y, lr, dropout_keep_prob), tf.train.Saver(), init_op
 
-def train(model, dataset, epochs, hp, save_dir=None, predset=None):
+def train(model, dataset, hp, save_dir=None, predset=None):
     # Unpack parameters
     train_data, test_data, train_targets, test_targets = dataset
     pred, rmse, optimizer, placeholders, saver, init_op = model
-    X, y, dropout_keep_prob = placeholders
-
-    # Add pred and rmse to summary
-    tf.summary.histogram('pred', pred)
-    rmse_summary_op = tf.summary.scalar('rmse', rmse)
+    X, y, lr, dropout_keep_prob = placeholders
 
     # Start tensorflow session
     with tf.Session(config=utils.tf_config(ALLOW_GPU_MEM_GROWTH)) as sess:
@@ -176,85 +187,81 @@ def train(model, dataset, epochs, hp, save_dir=None, predset=None):
         if save_dir is not None:
             summary_op = tf.summary.merge_all()
             summary_writer = tf.summary.FileWriter(save_dir, sess.graph)
-            summary_test_writer = tf.summary.FileWriter(os.path.join(save_dir, 'test_rmse'), sess.graph)
+
+        # Get max-norm regularization operations
+        max_norm_ops = tf.get_collection("max_norm")
 
         # Training loop
         best_rmse = float("inf")
-        for epoch in range(1, epochs):
-            hp['lr'] = hp['lr'] * hp['lr_decay'] if (epoch % 5) == 0 else hp['lr']
+        steps_since_improvement = 0
+        for epoch in range(1, hp['epochs']):
+            # Apply learning rate decay every LR_DECAY_PERIOD epochs
+            if (epoch % LR_DECAY_PERIOD) == 0  and (hp['opt'] is tf.train.MomentumOptimizer or hp['opt'] is tf.train.GradientDescentOptimizer):
+                hp['lr'] *= hp['opt']['lr_decay']
+            # Train model using minibatches
             batch_count = len(train_data) // hp['batch_size']
             for _ in range(batch_count):
                 indices = np.random.randint(len(train_data), size=hp['batch_size'])
                 batch_xs = train_data[indices, :]
                 batch_ys = train_targets[indices, :]
-                sess.run(optimizer, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: hp['dropout_keep_prob']})
-            # Display progress
+                sess.run(optimizer, feed_dict={X: batch_xs, y: batch_ys, lr: hp['lr'], dropout_keep_prob: hp['dropout_keep_prob']})
+                # Apply max norm regularization
+                sess.run(max_norm_ops)
+            # Evaluate model and display progress
+            steps_since_improvement += 1
             if epoch % DISPLAY_STEP_PREDIOD == 0:
                 if save_dir is not None:
-                    summary, last_loss = sess.run([summary_op, rmse], feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
+                    summary, test_rmse = sess.run([summary_op, rmse], feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
                     summary_writer.add_summary(summary, epoch)
-                    summary, test_rmse = sess.run([rmse_summary_op, rmse], feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
-                    summary_test_writer.add_summary(summary, epoch)
                 else:
-                    last_loss = sess.run(rmse, feed_dict={X: batch_xs, y: batch_ys, dropout_keep_prob: 1.})
                     test_rmse = sess.run(rmse, feed_dict={X: test_data, y: test_targets, dropout_keep_prob: 1.})
-                if best_rmse >= test_rmse:
+                if best_rmse > test_rmse:
+                    steps_since_improvement = 0
                     best_rmse = test_rmse
                     if save_dir is not None:
                         print('Saving model...')
                         saver.save(sess, save_dir)
-                print("Epoch=%03d/%03d, last_loss=%.6f, test_rmse=%.6f" % (epoch, epochs, last_loss, test_rmse))
+                print("Epoch=%03d/%03d, test_rmse=%.6f" % (epoch, hp['epochs'], test_rmse))
+                if steps_since_improvement >= hp['early_stopping']:
+                    print('Early stopping.')
+                    break
         print("Training done, best_rmse=%.6f" % best_rmse)
 
         # Restore best model and apply prediction
         if save_dir is not None:
             saver.restore(sess, save_dir)
         if predset is not None:
-            print('Applying trained model on prediction set')
+            print('Applying best trained model on prediction set')
             predictions = []
             for batch in np.array_split(predset, len(predset) // hp['batch_size']):
                 predictions.extend(sess.run(pred, feed_dict={X: batch, dropout_keep_prob: 1.}).flatten())
-            return test_rmse, predictions
-        return test_rmse
+            return best_rmse, predictions
+        return best_rmse
 
-def main():
-    # Parse cmd arguments
-    parser = argparse.ArgumentParser(description='Trains NYC Taxi trip duration fully connected neural network model for Kaggle competition submission.')
-    parser.add_argument('--floyd-job', action='store_true', help='Change working directories for training on Floyd service')
-    args = parser.parse_args()
-    save_dir = '/output/model/' if args.floyd_job else './model/'
-    train_set_path = '/input/train.csv' if args.floyd_job else './NYC_taxi_data_2016/train.csv'
-    pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
+def main(_=None):
+    # Define working directories
+    save_dir = '/output/models/' if tf.flags.FLAGS.floyd_job else './models/'
+    dataset_dir = '/input/' if tf.flags.FLAGS.floyd_job else './NYC_taxi_data_2016/'
+    
+    # Set log level to debug
+    tf.logging.set_verbosity(tf.logging.INFO)
 
     # Parse and preprocess data
-    features, (pred_ids, predset), dataset, (target_std, target_mean) = load_data(train_set_path, pred_set_path)
+    knn_files = ('knn_train_features.npz', 'knn_test_features.npz', 'knn_pred_features.npz')
+    features_len, (pred_ids, predset), dataset, (target_std, target_mean) = load_data(dataset_dir, 'train.csv', 'test.csv', *knn_files)
 
     # Build model
     hyperparameters = DEFAULT_HYPERPARAMETERS
-    model = build_model(len(features), hyperparameters, target_std, target_mean)
-    
-    # Add trainable variables to summary
-    for v in tf.trainable_variables():
-        tf.summary.histogram(v.name, v)
+    model = build_model(features_len, hyperparameters, target_std, target_mean)
 
     # Train model
     print('Model built, starting training.')
-    test_rmse, predictions = train(model, dataset, TRAINING_EPOCHS, hyperparameters, save_dir, predset)
+    test_rmse, predictions = train(model, dataset, hyperparameters, save_dir, predset)
 
     # Save predictions to csv file for Kaggle submission
     predictions = np.int32(np.round(np.exp(predictions))) - 1
     pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, 'preds.csv'), index=False)
 
 if __name__ == '__main__':
-    main()
-
-"""
-TODO: try cross entropy loss...
-def _discretize_duration(y, std, mean, duration_std_margin, duration_resolution):
-    min_x = tf.exp(duration_std_margin * std) / (1. + tf.exp(duration_std_margin * std))
-    max_x = tf.exp(-duration_std_margin * std) / (1. + tf.exp(-duration_std_margin * std))
-    vals = tf.exp(tf.reshape(y, [-1]) - mean)
-    indices = ((min_x - vals / (1. + vals)) / (max_x - min_x) + 1.) * duration_resolution
-    indices = tf.clip_by_value(indices, 0., duration_resolution)
-    return tf.cast(tf.round(indices), tf.int32)
-"""
+    tf.flags.DEFINE_bool('floyd-job', False, 'Change working directories for training on Floyd.')
+    tf.app.run()

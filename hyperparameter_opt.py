@@ -3,9 +3,6 @@
 """ Hyperparameter optimization of DNN model
 Uses hyperopt module to search for optimal DNN hyper parameters.
 
-TODO:
-    * handle early stoping and progressively increase dataset size (or/and NN depth) during hyperparameter optimization to accelerate optmization and allow more model evaluations
-
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
 from sklearn.utils import resample
@@ -18,13 +15,14 @@ import time
 import math
 import os
 
+import utils
 import nyc_dnn
 
-TRAINING_EPOCHS = 200
-SUB_TRAINSET_SIZE = 1.
 
 # Hyperparameter optimization space and algorithm
-MAX_EVALS = 40
+MAX_EVALS = 35
+SUB_TRAINSET_SIZE = 1.
+ALLOW_GPU_MEM_GROWTH = True
 OPT_ALGO = ho.tpe.suggest
 HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-4), math.log(8e-3)),
             'lr_decay': ho.hp.uniform('lr_decay', 0.2, 1.),
@@ -38,16 +36,13 @@ HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-4), math.log(8e-3)),
             'duration_resolution': ho.hp.choice('duration_resolution', [128, 256, 512])}
 
 def main():
-    # Parse cmd arguments
-    parser = argparse.ArgumentParser(description='Trains NYC Taxi trip duration fully connected neural network model for Kaggle competition submission.')
-    parser.add_argument('--floyd-job', action='store_true', help='Change working directories for training on Floyd service')
-    args = parser.parse_args()
-    save_dir = '/output/hyperopt_models/' if args.floyd_job else './hyperopt_models/'
-    train_set_path = '/input/train.csv' if args.floyd_job else './NYC_taxi_data_2016/train.csv'
-    pred_set_path = '/input/test.csv' if args.floyd_job else './NYC_taxi_data_2016/test.csv'
+    # Define working directories
+    save_dir = '/output/models/hyperopt_models/' if tf.flags.FLAGS.floyd_job else './models/hyperopt_models/'
+    dataset_dir = '/input/' if tf.flags.FLAGS.floyd_job else './NYC_taxi_data_2016/'
 
     # Load data and sample a subset of trainset
-    features, (pred_ids, predset), dataset, (target_std, target_mean) = nyc_dnn.load_data(train_set_path, pred_set_path)
+    knn_files = ('knn_train_features.npz', 'knn_test_features.npz', 'knn_pred_features.npz')
+    features_len, (pred_ids, predset), dataset, (target_std, target_mean) = nyc_dnn.load_data(dataset_dir, 'train.csv', 'test.csv', *knn_files)
     train_data, test_data, train_targets, test_targets = dataset
     train_data, train_targets = resample(train_data, train_targets, replace=False, n_samples=int(SUB_TRAINSET_SIZE * len(train_data)))
     dataset = (train_data, test_data, train_targets, test_targets)
@@ -55,17 +50,24 @@ def main():
     # Define the objective function optimized by hyperopt
     eval_count = 0
     def _objective(hyperparameters):
-        nonlocal eval_count # TODO: find a better way to do this (probably using hyperopt module features)
+        nonlocal eval_count
         eval_count += 1
+        model_save_dir = save_dir + str(eval_count) + '/'
         print('\n\n' + '#' * 10 + ' TRYING HYPERPERPARAMETER SET #' + str(eval_count) + ' ' + '#' * 10)
         print(hyperparameters)
 		# Reset default tensorflow graph
         tf.reset_default_graph()
+        # Write hyperparameters to summary as text (once per session/model)
+        hp_string = tf.placeholder(tf.string, name='hp')
+        hp_summary_op = tf.summary.text('hyperparameters', hp_string, collections=['per_session'])
+        with tf.Session(config=utils.tf_config(ALLOW_GPU_MEM_GROWTH)) as sess:
+            summary_writer = tf.summary.FileWriter(model_save_dir, sess.graph)
+            summary = sess.run(hp_summary_op, feed_dict={hp_string: 'Trial #' + str(eval_count) + ' hyperparameters:\n' + str(hyperparameters)})
+            summary_writer.add_summary(summary, 0)
         # Build model
-        model = nyc_dnn.build_model(len(features), hyperparameters, target_std, target_mean)
+        model = nyc_dnn.build_model(features_len, hyperparameters, target_std, target_mean, summarize_parameters=False)
         # Train model
-        model_save_dir = save_dir + str(eval_count) + '/'
-        test_rmse, predictions = nyc_dnn.train(model, dataset, TRAINING_EPOCHS, hyperparameters, model_save_dir, predset)
+        test_rmse, predictions = nyc_dnn.train(model, dataset, hyperparameters, model_save_dir, predset)
         # Save predictions to csv file for Kaggle submission
         predictions = np.int32(np.round(np.exp(predictions))) - 1
         pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, str(eval_count), 'preds.csv'), index=False)
@@ -85,4 +87,5 @@ def main():
     print(best_parameters) # TODO: translate ho.hp.choice hyperarameters from index to their actual value
 
 if __name__ == '__main__':
-    main()
+    tf.flags.DEFINE_bool('floyd-job', False, 'Change working directories for training on Floyd.')
+    tf.app.run()
