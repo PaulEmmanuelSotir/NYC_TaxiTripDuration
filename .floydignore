@@ -10,8 +10,9 @@ parts
 sdist
 var
 
-model
+models
 notebooks
+*.npz
 *.csv
 *.zip
 __pycache__
