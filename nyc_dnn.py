@@ -168,10 +168,8 @@ def train(model, dataset, epochs, hp, save_dir=None, predset=None):
     tf.summary.histogram('pred', pred)
     rmse_summary_op = tf.summary.scalar('rmse', rmse)
 
-    # Start tensorlfow session
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = ALLOW_GPU_MEM_GROWTH
-    with tf.Session(config=config) as sess:
+    # Start tensorflow session
+    with tf.Session(config=utils.tf_config(ALLOW_GPU_MEM_GROWTH)) as sess:
         sess.run(init_op)
 
         # Create summary utils
