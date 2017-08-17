@@ -18,22 +18,37 @@ import os
 import utils
 import nyc_dnn
 
+#HP_SPACE = {'epochs': 200,
+#            'early_stopping': 20,
+#            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
+#            'opt': ho.hp.choice('opt', [{'algo': tf.train.AdamOptimizer},
+#                                        {'algo': tf.train.RMSPropOptimizer},
+#                                        {'algo': tf.train.GradientDescentOptimizer, 'lr_decay': ho.hp.uniform('lr_decay', 0.5, 1.)},
+#                                        {'algo': tf.train.MomentumOptimizer, 'lr_decay': ho.hp.uniform('lr_decay', 0.5, 1.), 'm': ho.hp.uniform('m', -0.05, .5)}]),
+#            'depth': ho.hp.choice('depth', [4, 5, 6, 7, 8, 9]),
+#            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048, 4096, 8192]),
+#            'hidden_size': ho.hp.choice('hidden_size', [256, 512, 1024]),
+#            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
+#            'max_norm_threshold': ho.hp.uniform('max_norm_threshold', [0.8, 2.]),
+#            'duration_std_margin': ho.hp.choice('duration_std_margin', [5, 6]),
+#            'duration_resolution': ho.hp.choice('duration_resolution', [1, 128, 256, 512])}
 
 # Hyperparameter optimization space and algorithm
 MAX_EVALS = 35
 SUB_TRAINSET_SIZE = 1.
 ALLOW_GPU_MEM_GROWTH = True
 OPT_ALGO = ho.tpe.suggest
-HP_SPACE = {'lr': ho.hp.loguniform('lr', math.log(1e-4), math.log(8e-3)),
-            'lr_decay': ho.hp.uniform('lr_decay', 0.2, 1.),
-            'activation': ho.hp.choice('activation', [tf.nn.tanh]),
-            'batch_size': ho.hp.choice('batch_size', [1024, 2048, 2048]),
-            'hidden_size': ho.hp.choice('hidden_size', [128, 256, 512]),
-            'residual_blocks': ho.hp.choice('residual_blocks', [3, 4, 5, 6]),
-            'l2_regularization': ho.hp.uniform('l2_regularization', 0, 0.05),
-            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.7, 1.),
-            'duration_std_margin': ho.hp.choice('duration_std_margin', [4, 5, 6]),
-            'duration_resolution': ho.hp.choice('duration_resolution', [128, 256, 512])}
+HP_SPACE = {'epochs': 200,
+            'early_stopping': 20,
+            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
+            'opt': {'algo': tf.train.AdamOptimizer},
+            'depth': ho.hp.choice('depth', [4, 5]),
+            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048, 4096, 8192]),
+            'hidden_size': 512,
+            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
+            'max_norm_threshold': ho.hp.uniform('max_norm_threshold', 0.8, 2.),
+            'duration_std_margin': 5,
+            'output_size': 1}
 
 def main():
     # Define working directories
@@ -46,6 +61,7 @@ def main():
     train_data, test_data, train_targets, test_targets = dataset
     train_data, train_targets = resample(train_data, train_targets, replace=False, n_samples=int(SUB_TRAINSET_SIZE * len(train_data)))
     dataset = (train_data, test_data, train_targets, test_targets)
+
 
     # Define the objective function optimized by hyperopt
     eval_count = 0
