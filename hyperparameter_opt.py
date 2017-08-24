@@ -18,6 +18,7 @@ import os
 import utils
 import nyc_dnn
 
+# Full example of hyperparameter search space:
 #HP_SPACE = {'epochs': 200,
 #            'early_stopping': 20,
 #            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
@@ -31,7 +32,7 @@ import nyc_dnn
 #            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
 #            'max_norm_threshold': ho.hp.uniform('max_norm_threshold', [0.8, 2.]),
 #            'duration_std_margin': ho.hp.choice('duration_std_margin', [5, 6]),
-#            'duration_resolution': ho.hp.choice('duration_resolution', [1, 128, 256, 512])}
+#            'output_size': ho.hp.choice('output_size', [1, 128, 256, 512])}
 
 # Hyperparameter optimization space and algorithm
 MAX_EVALS = 35
@@ -52,8 +53,10 @@ HP_SPACE = {'epochs': 200,
 
 def main():
     # Define working directories
-    save_dir = '/output/models/hyperopt_models/' if tf.flags.FLAGS.floyd_job else './models/hyperopt_models/'
-    dataset_dir = '/input/' if tf.flags.FLAGS.floyd_job else './NYC_taxi_data_2016/'
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    save_dir = '/output/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'models/hyperopt_models/')
+    dataset_dir = '/input/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'NYC_taxi_data_2016/')
+   
 
     # Load data and sample a subset of trainset
     knn_files = ('knn_train_features.npz', 'knn_test_features.npz', 'knn_pred_features.npz')
@@ -80,10 +83,12 @@ def main():
             summary_writer = tf.summary.FileWriter(model_save_dir, sess.graph)
             summary = sess.run(hp_summary_op, feed_dict={hp_string: 'Trial #' + str(eval_count) + ' hyperparameters:\n' + str(hyperparameters)})
             summary_writer.add_summary(summary, 0)
+        # Get buckets from train targets
+        train_labels, test_labels, bucket_means = nyc_dnn.get_buckets(dataset[2], dataset[3], hyperparameters['output_size'])
         # Build model
-        model = nyc_dnn.build_model(features_len, hyperparameters, target_std, target_mean, summarize_parameters=False)
+        model = nyc_dnn.build_model(features_len, hyperparameters, bucket_means, summarize_parameters=False)
         # Train model
-        test_rmse, predictions = nyc_dnn.train(model, dataset, hyperparameters, model_save_dir, predset)
+        test_rmse, predictions = nyc_dnn.train(model, dataset, train_labels, test_labels, hyperparameters, model_save_dir, predset)
         # Save predictions to csv file for Kaggle submission
         predictions = np.int32(np.round(np.exp(predictions))) - 1
         pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, str(eval_count), 'preds.csv'), index=False)
