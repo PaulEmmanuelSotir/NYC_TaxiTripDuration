@@ -19,6 +19,7 @@
     <VisualStudioVersion Condition=" '$(VisualStudioVersion)' == '' ">10.0</VisualStudioVersion>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="feature_engineering.py" />
     <Compile Include="hyperparameter_opt.py" />
     <Compile Include="nyc_dnn.py" />
   </ItemGroup>

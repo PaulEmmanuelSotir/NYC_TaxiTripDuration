@@ -22,10 +22,9 @@ import nyc_dnn
 #HP_SPACE = {'epochs': 200,
 #            'early_stopping': 20,
 #            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
-#            'opt': ho.hp.choice('opt', [{'algo': tf.train.AdamOptimizer},
-#                                        {'algo': tf.train.RMSPropOptimizer},
-#                                        {'algo': tf.train.GradientDescentOptimizer, 'lr_decay': ho.hp.uniform('lr_decay', 0.5, 1.)},
-#                                        {'algo': tf.train.MomentumOptimizer, 'lr_decay': ho.hp.uniform('lr_decay', 0.5, 1.), 'm': ho.hp.uniform('m', -0.05, .5)}]),
+#            'opt': ho.hp.choice('opt', [tf.train.AdamOptimizer,
+#                                        tf.train.RMSPropOptimizer,
+#                                        tf.train.GradientDescentOptimizer]),
 #            'depth': ho.hp.choice('depth', [4, 5, 6, 7, 8, 9]),
 #            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048, 4096, 8192]),
 #            'hidden_size': ho.hp.choice('hidden_size', [256, 512, 1024]),
@@ -84,7 +83,7 @@ def main():
             summary = sess.run(hp_summary_op, feed_dict={hp_string: 'Trial #' + str(eval_count) + ' hyperparameters:\n' + str(hyperparameters)})
             summary_writer.add_summary(summary, 0)
         # Get buckets from train targets
-        train_labels, test_labels, bucket_means = nyc_dnn.get_buckets(dataset[2], dataset[3], hyperparameters['output_size'])
+        train_labels, test_labels, bucket_means = nyc_dnn.bucketize(dataset[2], dataset[3], hyperparameters['output_size'])
         # Build model
         model = nyc_dnn.build_model(features_len, hyperparameters, bucket_means, summarize_parameters=False)
         # Train model

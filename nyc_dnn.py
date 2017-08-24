@@ -22,27 +22,26 @@ from sklearn.model_selection import train_test_split
 
 import utils
 
-__all__ = ['load_data', 'get_buckets', 'build_model', 'train']
+__all__ = ['load_data', 'bucketize', 'build_model', 'train']
 
 DEFAULT_HYPERPARAMETERS = {'epochs': 1200,
                            'lr': 0.0005,
-                           'opt': {'algo': tf.train.AdamOptimizer},
+                           'opt': tf.train.AdamOptimizer,
                            'depth': 8,
                            'hidden_size': 512,
                            'batch_size': 1024,
                            'early_stopping': 70,
-#                          'max_norm_threshold': 1.,
+                           #max_norm_threshold': 1.,
                            'duration_std_margin': 6,
                            'dropout_keep_prob': 0.83,
                            'output_size': 512}
 
 TEST_SIZE = 100000
-LR_DECAY_PERIOD = 5
 DISPLAY_STEP_PREDIOD = 1
 ALLOW_GPU_MEM_GROWTH = True
 
-def get_buckets(train_targets, test_targets, bucket_count):
-    # Process buckets from train targets
+def bucketize(train_targets, test_targets, bucket_count):
+    """ Process buckets from train targets and deduce labels of trainset and testset """
     bucket_size = len(train_targets) // bucket_count
     buckets = [train_targets[i * bucket_size: (1 + i) * bucket_size] for i in range(bucket_count)]
     # Bucketize targets (TODO: try soft classes)
@@ -69,6 +68,7 @@ def _max_norm_regularizer(threshold, collection):
     return None
 
 def load_data(dataset_dir, train_file, test_file, knn_train_file, knn_test_file, knn_pred_file):
+    """ Load data, add engineered features and split dataset into trainset, testset and predset """
     from feature_engineering import load_features
     data, pred_data, targets, pred_ids = load_features(os.path.join(dataset_dir, train_file), os.path.join(dataset_dir, test_file))
 
@@ -108,6 +108,7 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
     return dense_do
 
 def build_model(n_input, hp, bucket_means, summarize_parameters=True):
+    """ Define Tensorflow DNN model architechture """
     # Input placeholders
     X = tf.placeholder(tf.float32, [None, n_input], name='X')
     y = tf.placeholder(tf.float32, [None], name='y')
@@ -124,15 +125,15 @@ def build_model(n_input, hp, bucket_means, summarize_parameters=True):
         for i in range(1, hp['depth'] - 1):
             layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize_parameters, weights_regularizer=wreg)
         logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize_parameters, activation=None, weights_regularizer=wreg)
-    
+
     # Define loss and optimizer
     loss = tf.losses.sparse_softmax_cross_entropy(labels, logits)
     pred = _buckets_to_duration(logits, bucket_means)
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred))
-    opt_algorithm = hp['opt']['algo']
-    optimizer = opt_algorithm(learning_rate=lr) if opt_algorithm is not tf.train.MomentumOptimizer else opt_algorithm(learning_rate=lr, momentum=hp['opt']['m'])
+    optimizer = hp['opt'](learning_rate=lr)
     grads_and_vars = optimizer.compute_gradients(loss)
-    # Add pred, rmse and gradients to submmary
+
+    # Add pred, rmse and gradients to summary
     with tf.name_scope('dnn_gradients'):
         for g, v in grads_and_vars:
             if g is not None and summarize_parameters:
@@ -140,6 +141,7 @@ def build_model(n_input, hp, bucket_means, summarize_parameters=True):
     optimize = optimizer.apply_gradients(grads_and_vars)
     tf.summary.histogram('pred', pred)
     tf.summary.scalar('rmse', rmse)
+
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
     return pred, rmse, optimize, (X, y, labels, lr, dropout_keep_prob), tf.train.Saver(), init_op
@@ -165,19 +167,16 @@ def train(model, dataset, train_labels, test_labels, hp, save_dir, predset=None)
         best_rmse = float("inf")
         steps_since_improvement = 0
         for epoch in range(1, hp['epochs']):
-            # Apply learning rate decay every LR_DECAY_PERIOD epochs
-            if (epoch % LR_DECAY_PERIOD) == 0  and (hp['opt'] is tf.train.MomentumOptimizer or hp['opt'] is tf.train.GradientDescentOptimizer):
-                hp['lr'] *= hp['opt']['lr_decay']
             # Train model using minibatches
             batch_count = len(train_data) // hp['batch_size']
             for _ in range(batch_count):
                 indices = np.random.randint(len(train_data), size=hp['batch_size'])
-                batch_xs = train_data[indices, :]
-                batch_ys = train_targets[indices]
-                batch_ls = train_labels[indices]
-                sess.run(optimizer, feed_dict={X: batch_xs, y: batch_ys, labels: batch_ls, lr: hp['lr'], dropout_keep_prob: hp['dropout_keep_prob']})
-                # Apply max norm regularization
-                sess.run(max_norm_ops)
+                sess.run(optimizer, feed_dict={X: train_data[indices, :],
+                                               y: train_targets[indices],
+                                               labels: train_labels[indices],
+                                               lr: hp['lr'],
+                                               dropout_keep_prob: hp['dropout_keep_prob']})
+                sess.run(max_norm_ops) # Apply max norm regularization
             # Evaluate model and display progress
             steps_since_improvement += 1
             if epoch % DISPLAY_STEP_PREDIOD == 0:
@@ -219,7 +218,7 @@ def main(_=None):
     
     # Get buckets from train targets
     hyperparameters = DEFAULT_HYPERPARAMETERS
-    train_labels, test_labels, bucket_means = get_buckets(dataset[2], dataset[3], hyperparameters['output_size'])
+    train_labels, test_labels, bucket_means = bucketize(dataset[2], dataset[3], hyperparameters['output_size'])
 
     # Build model
     print('Hyperparameters:\n' + str(hyperparameters))
