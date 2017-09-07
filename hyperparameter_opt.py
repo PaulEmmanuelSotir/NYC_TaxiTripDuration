@@ -55,15 +55,12 @@ def main():
     source_dir = os.path.dirname(os.path.abspath(__file__))
     save_dir = '/output/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'models/hyperopt_models/')
     dataset_dir = '/input/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'NYC_taxi_data_2016/')
-   
 
     # Load data and sample a subset of trainset
-    knn_files = ('knn_train_features.npz', 'knn_test_features.npz', 'knn_pred_features.npz')
-    features_len, (pred_ids, predset), dataset, (target_std, target_mean) = nyc_dnn.load_data(dataset_dir, 'train.csv', 'test.csv', *knn_files)
+    features_len, (pred_ids, predset), dataset = nyc_dnn.load_data(dataset_dir, 'train.csv', 'test.csv')
     train_data, test_data, train_targets, test_targets = dataset
     train_data, train_targets = resample(train_data, train_targets, replace=False, n_samples=int(SUB_TRAINSET_SIZE * len(train_data)))
     dataset = (train_data, test_data, train_targets, test_targets)
-
 
     # Define the objective function optimized by hyperopt
     eval_count = 0
