@@ -50,7 +50,7 @@ def cosine_annealing(x, max_lr, min_lr):
 def warm_restart(epoch, t_0, max_lr, min_lr=1e-8, t_mult=2, annealing_fn=cosine_annealing):
     """ Stochastic gradient descent with warm restarts of learning rate (see https://arxiv.org/pdf/1608.03983.pdf) """
     def _cycle_length(c): return t_0 * t_mult ** c
-    cycle = int(np.floor(np.log(1. + epoch / t_0) / np.log(t_mult)))
+    cycle = int(np.floor(np.log(- epoch / t_0 * (1 - t_mult) + 1) / np.log(t_mult)))
     cycle_begining = np.sum([_cycle_length(c) for c in range(0, cycle)]) if cycle > 0 else 0.
     x = (epoch - cycle_begining) / _cycle_length(cycle)
     lr = min_lr + (max_lr - min_lr) * annealing_fn(x, max_lr, min_lr)
