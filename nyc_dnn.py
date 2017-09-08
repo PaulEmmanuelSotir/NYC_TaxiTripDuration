@@ -60,10 +60,6 @@ def bucketize(train_targets, valid_targets, bucket_count):
     return train_labels, valid_labels, buckets_means
 
 
-def _buckets_to_duration(logits, bucket_means):
-    return tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
-
-
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, weights_regularizer=None, training=False):
     with tf.variable_scope(name):
         weights = tf.Variable(utils.xavier_init(*shape, activation='tanh'), name='w')
@@ -106,7 +102,8 @@ def build_model(n_input, hp, bucket_means, summarize=True):
         weights.append(w)
 
     # Define loss and optimizer
-    pred = _buckets_to_duration(logits, bucket_means)
+
+    pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred), name='rmse')
     with tf.name_scope('L2_regularization'):
         L2 = l2_regularization * tf.add_n([tf.nn.l2_loss(w) for w in weights])
