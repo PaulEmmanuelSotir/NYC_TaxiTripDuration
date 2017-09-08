@@ -37,7 +37,7 @@ Also note that this project can run on [Floyd](https://www.floydhub.com/) (Herok
 
 ```bash
 # To run a Floyd training job, use the following command:
-floyd run --data paulemmanuel/datasets/nyc_taxi_data_2016/2 --env tensorflow-1.2 --tensorboard --gpu "python nyc_dnn.py --floyd-job"
+floyd run --data paulemmanuel/datasets/nyc_taxi_data_2016/3 --env tensorflow-1.2 --tensorboard --gpu "python nyc_dnn.py --floyd-job"
 # Or run the following command for hyperparameter optimization:
-floyd run --data paulemmanuel/datasets/nyc_taxi_data_2016/2 --env tensorflow-1.2 --tensorboard --gpu "python hyperparameter_opt.py --floyd-job"
+floyd run --data paulemmanuel/datasets/nyc_taxi_data_2016/3 --env tensorflow-1.2 --tensorboard --gpu "python hyperparameter_opt.py --floyd-job"
 ```

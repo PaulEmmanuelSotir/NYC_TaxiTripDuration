@@ -10,6 +10,7 @@ parts
 sdist
 var
 
+.cache
 models
 notebooks
 *.npz
