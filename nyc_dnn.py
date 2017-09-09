@@ -1,6 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-""" NYC Taxi Trip Duration - Kaggle competion
+""" NYC Taxi Trip Duration - Kaggle competition
 Note that the code could probably be greatly simplified using tf.train.Supervisor and tf.contrib.learn.dnnregressor,
 but we prefer to define model by hand here to learn more about tensorflow python API (and for more flexibility).
 
@@ -20,20 +20,20 @@ import utils
 
 __all__ = ['bucketize', 'build_model', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'epochs': 650,
+DEFAULT_HYPERPARAMETERS = {'epochs': 610,
                            'lr': 0.1,
                            'warm_resart_lr': {
                                'initial_cycle_length': 20,
                                'lr_cycle_growth': 1.5,
                                'minimal_lr': 5e-8,
-                               'keep_best_snapshot': 3,
+                               'keep_best_snapshot': 3
                            },
-                           'depth': 10,
+                           'depth': 4,
                            'hidden_size': 512,
                            'batch_size': 1024,
                            'early_stopping': None,
                            'dropout_keep_prob': 1.,
-                           'l2_regularization': 1.5e-4,
+                           'l2_regularization': 5e-4,
                            'output_size': 512}
 
 VALID_SIZE = 100000
@@ -60,11 +60,9 @@ def bucketize(train_targets, valid_targets, bucket_count):
     return train_labels, valid_labels, buckets_means
 
 
-def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, weights_regularizer=None, training=False):
+def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
     with tf.variable_scope(name):
         weights = tf.Variable(utils.xavier_init(*shape, activation='tanh'), name='w')
-        if weights_regularizer is not None:
-            weights_regularizer(weights)
         bias = tf.Variable(tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
         logits = tf.add(tf.matmul(x, weights), bias)
         logits_bn = tf.layers.batch_normalization(logits, training=training) if batch_norm else logits
@@ -109,7 +107,7 @@ def build_model(n_input, hp, bucket_means, summarize=True):
         L2 = l2_regularization * tf.add_n([tf.nn.l2_loss(w) for w in weights])
     loss = tf.losses.sparse_softmax_cross_entropy(labels, logits) + L2
     tf.summary.histogram('pred', pred, collections=['extended_summary'])
-    optimizer = tf.train.MomentumOptimizer(learning_rate=lr, momentum=0.9, use_nesterov=True)
+    optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=0.9)
     grads_and_vars = optimizer.compute_gradients(loss)
     with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
         optimize = optimizer.apply_gradients(grads_and_vars)
@@ -153,14 +151,14 @@ def train(model, dataset, train_labels, valid_labels, hp, save_dir, testset):
                                                                                          l2_regularization: hp['l2_regularization'],
                                                                                          training: True})
                 if wr_hp is not None:
-                    learning_rate, new_cycle = utils.warm_restart(epoch + batch / batch_per_epoch, t_0=wr_hp['initial_cycle_length'],
+                    learning_rate, new_cycle = utils.warm_restart(epoch + (1 + batch) / batch_per_epoch, t_0=wr_hp['initial_cycle_length'],
                                                                   max_lr=hp['lr'], min_lr=wr_hp['minimal_lr'], t_mult=wr_hp['lr_cycle_growth'])
                     if new_cycle:
                         print('Saving cycle #' + str(cycle) + ' snapshot...')
                         saver.save(sess, os.path.join(save_dir, str(cycle % wr_hp['keep_best_snapshot'])) + '/')
                         cycle += 1
 
-                def _moving_mean(value): return len(indices) * value / len(valid_data)
+                def _moving_mean(value): return len(indices) * value / len(train_data)
                 mean_rmse += _moving_mean(batch_rmse)
                 mean_loss += _moving_mean(batch_loss)
                 mean_lr += _moving_mean(learning_rate)
@@ -219,7 +217,7 @@ def main(_=None):
     print('Hyperparameters:\n' + str(hyperparameters))
 
     # Parse and preprocess data
-    features_len, (test_ids, testset), dataset = feature_engineering.load_data(dataset_dir, 'train.csv', 'test.csv', VALID_SIZE)
+    features_len, (test_ids, testset), dataset = feature_engineering.load_data(dataset_dir, 'train.csv', 'test.csv', VALID_SIZE, cache_read_only=tf.flags.FLAGS.floyd_job)
 
     # Get buckets from train targets
     (_, _, train_targets, valid_targets) = dataset

@@ -16,7 +16,7 @@ import tensorflow as tf
 # TODO: snapshot ensembling proposed by https://arxiv.org/pdf/1704.00109.pdf
 
 __all__ = ['tf_config', 'xavier_init', 'cosine_annealing', 'warm_restart', 'add_summary_values',
-           'floyd_run', 'floyd_stop', 'floyd_delete', 'get_model_from_floyd', 'append_kaggle_score']
+           'cd', 'floyd_run', 'floyd_stop', 'floyd_delete', 'get_model_from_floyd', 'append_kaggle_score']
 
 PREDS_FILE = 'preds.csv'
 
@@ -63,6 +63,19 @@ def add_summary_values(summary_writer, global_step=None, **values):
         for name, value in values.items():
             summary.value.add(tag=name, simple_value=value)
         summary_writer.add_summary(summary, global_step=global_step)
+
+
+class cd:
+    """Context manager for changing the current working directory from https://stackoverflow.com/a/13197763/5323273"""
+    def __init__(self, newPath):
+        self.newPath = os.path.expanduser(newPath)
+
+    def __enter__(self):
+        self.savedPath = os.getcwd()
+        os.chdir(self.newPath)
+
+    def __exit__(self, etype, value, traceback):
+        os.chdir(self.savedPath)
 
 
 def floyd_run(python_cmd, dataset=None, env='tensorflow-1.2', gpu=True):
@@ -120,41 +133,22 @@ def get_model_from_floyd(floyd_project, floyd_job, models_dir, score=None, hyper
         print('Already imported this Floyd job score.')
         return already_done[0]
 
-    # Get output url from floyd job
-    print('get job output url...')
-    output_cmd = 'floyd output ' + os.path.join(floyd_project, str(floyd_job)) + ' -u'
-    try:
-        p = subprocess.run(output_cmd, stdout=subprocess.PIPE, shell=True, check=True, stderr=subprocess.STDOUT)
-        url = p.stdout.strip().decode(CMD_ENCODING) + '/'
-    except subprocess.CalledProcessError as e:
-        print('FAILED TO GET FLOYD JOB OUTPUT URL:\n> ' + e.cmd + '\nSTDOUT:\n' + e.output.decode(CMD_ENCODING))
-        return None
-
     # Download output directory
     print('downloading job output...')
     output_dir = os.path.join(models_dir, 'job_' + str(floyd_job))
     os.makedirs(output_dir)
-    wget_cmd = 'wget -r -np -nH --cut-dirs=4 -P ' + output_dir + ' ' + url
+    clone_cmd = 'floyd data clone ' + floyd_project + '/' + str(floyd_job) + '/output'
     try:
-        out = subprocess.run(wget_cmd, stdout=subprocess.PIPE, shell=True, check=True, stderr=subprocess.STDOUT).stdout.strip()
-        if out.find(b'FINISHED') == -1:
-            raise subprocess.CalledProcessError(0, wget_cmd, out)
+        with cd(output_dir):
+            out = subprocess.run(clone_cmd, stdout=subprocess.PIPE, shell=True, check=True, stderr=subprocess.STDOUT).stdout.strip()
+            if out.find(b'ERROR') != -1:
+                raise subprocess.CalledProcessError(0, clone_cmd, out)
     except subprocess.CalledProcessError as e:
-        print('FAILED TO DOWNLOAD FLOYD JOB OUTPUT:\n> ' + e.cmd + '\nSTDOUT:\n' + e.output.decode(CMD_ENCODING))
+        print('FAILED TO CLONE FLOYD JOB OUTPUT:\n> ' + e.cmd + '\nSTDOUT:\n' + e.output.decode(CMD_ENCODING))
         shutil.rmtree(output_dir)
         return None
-    print('Cleaning output directory...')
-    for root, dirnames, filenames in os.walk(output_dir):
-        for filename in filenames:
-            if os.path.basename(filename) == 'index.html' or os.path.basename(filename) == 'robots.txt':
-                # Remove 'robot.txt' and 'index.html' files from output
-                os.remove(os.path.join(root, filename))
-            elif os.path.basename(filename) == PREDS_FILE:
-                # Rename preds.csv
-                os.rename(os.path.join(root, filename), os.path.join(root, os.path.dirname(filename), 'preds_' + str(floyd_job) + '.csv'))
 
-    # Modify tensorflow checkpoint file
-    # TODO: ...
+    # TODO: Modify tensorflow checkpoint file
 
     # Save best test score and hyperparameters to scores file
     print('Registering job to scores file...')

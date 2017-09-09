@@ -8,10 +8,10 @@ from sklearn.decomposition import PCA
 from sklearn import preprocessing
 import pandas as pd
 import numpy as np
+import shutil
 import os
 
 from joblib import Memory
-memory = Memory(cachedir='./.cache', verbose=0)
 
 __all__ = ['load_data']
 
@@ -59,85 +59,93 @@ def _osrm(datadir):
     return train_street_info, test_street_info, features
 
 
-@memory.cache
-def load_data(datadir, trainset, testset, valid_size):
-    features = ['vendor_id', 'passenger_count', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'pickup_pca0', 'pickup_pca1',
-                'dropoff_pca0', 'dropoff_pca1', 'pca_manhattan', 'month', 'weekofyear', 'weekday', 'hour', 'week_delta', 'week_delta_sin', 'hour_sin']
-    df_all = pd.concat((pd.read_csv(os.path.join(datadir, trainset)), pd.read_csv(os.path.join(datadir, testset))))
-    df_all['pickup_datetime'] = df_all['pickup_datetime'].apply(pd.Timestamp)
-    df_all['dropoff_datetime'] = df_all['dropoff_datetime'].apply(pd.Timestamp)
-    df_all['trip_duration_log'] = np.log(df_all['trip_duration'] + 1)
+def load_data(datadir, trainset, testset, valid_size, cache_read_only):
+    if cache_read_only:
+        dest = '/output/cache'
+        shutil.copytree(datadir, dest)
+        datadir = dest
+    memory = Memory(cachedir=os.path.join(datadir, 'cache'))
 
-    # Remove abnormal locations
-    X = np.vstack((df_all[['pickup_latitude', 'pickup_longitude']], df_all[['dropoff_latitude', 'dropoff_longitude']]))
-    min_lat, min_lng = X.mean(axis=0) - X.std(axis=0)
-    max_lat, max_lng = X.mean(axis=0) + X.std(axis=0)
-    X = X[(X[:, 0] > min_lat) & (X[:, 0] < max_lat) & (X[:, 1] > min_lng) & (X[:, 1] < max_lng)]
+    @memory.cache(ignore=['datadir'])
+    def _cached_load_data(datadir, trainset, testset, valid_size):
+        features = ['vendor_id', 'passenger_count', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'pickup_pca0', 'pickup_pca1',
+                    'dropoff_pca0', 'dropoff_pca1', 'pca_manhattan', 'month', 'weekofyear', 'weekday', 'hour', 'week_delta', 'week_delta_sin', 'hour_sin']
+        df_all = pd.concat((pd.read_csv(os.path.join(datadir, trainset)), pd.read_csv(os.path.join(datadir, testset))))
+        df_all['pickup_datetime'] = df_all['pickup_datetime'].apply(pd.Timestamp)
+        df_all['dropoff_datetime'] = df_all['dropoff_datetime'].apply(pd.Timestamp)
+        df_all['trip_duration_log'] = np.log(df_all['trip_duration'] + 1)
 
-    # Get PCA features on location
-    pca = PCA().fit(X)
-    df_all['pickup_pca0'] = pca.transform(df_all[['pickup_latitude', 'pickup_longitude']])[:, 0]
-    df_all['pickup_pca1'] = pca.transform(df_all[['pickup_latitude', 'pickup_longitude']])[:, 1]
-    df_all['dropoff_pca0'] = pca.transform(df_all[['dropoff_latitude', 'dropoff_longitude']])[:, 0]
-    df_all['dropoff_pca1'] = pca.transform(df_all[['dropoff_latitude', 'dropoff_longitude']])[:, 1]
-    df_all['pca_manhattan'] = (df_all['dropoff_pca0'] - df_all['pickup_pca0']).abs() + (df_all['dropoff_pca1'] - df_all['pickup_pca1']).abs()
+        # Remove abnormal locations
+        X = np.vstack((df_all[['pickup_latitude', 'pickup_longitude']], df_all[['dropoff_latitude', 'dropoff_longitude']]))
+        min_lat, min_lng = X.mean(axis=0) - X.std(axis=0)
+        max_lat, max_lng = X.mean(axis=0) + X.std(axis=0)
+        X = X[(X[:, 0] > min_lat) & (X[:, 0] < max_lat) & (X[:, 1] > min_lng) & (X[:, 1] < max_lng)]
 
-    # Geohash
-    precision = 12
-    geohash_features = {}
-    for _, row in df_all.iterrows():
-        _geohash(geohash_features, 'pickup_geohash_', row['pickup_latitude'], row['pickup_longitude'], precision=precision)
-        _geohash(geohash_features, 'dropoff_geohash_', row['dropoff_latitude'], row['dropoff_longitude'], precision=precision)
-    df_all = df_all.join(pd.DataFrame(geohash_features))
-    features.extend(list(geohash_features.keys()))
+        # Get PCA features on location
+        pca = PCA().fit(X)
+        df_all['pickup_pca0'] = pca.transform(df_all[['pickup_latitude', 'pickup_longitude']])[:, 0]
+        df_all['pickup_pca1'] = pca.transform(df_all[['pickup_latitude', 'pickup_longitude']])[:, 1]
+        df_all['dropoff_pca0'] = pca.transform(df_all[['dropoff_latitude', 'dropoff_longitude']])[:, 0]
+        df_all['dropoff_pca1'] = pca.transform(df_all[['dropoff_latitude', 'dropoff_longitude']])[:, 1]
+        df_all['pca_manhattan'] = (df_all['dropoff_pca0'] - df_all['pickup_pca0']).abs() + (df_all['dropoff_pca1'] - df_all['pickup_pca1']).abs()
 
-    # Date times
-    df_all['month'] = df_all['pickup_datetime'].dt.month
-    df_all['weekofyear'] = df_all['pickup_datetime'].dt.weekofyear
-    df_all['weekday'] = df_all['pickup_datetime'].dt.weekday
-    df_all['hour'] = df_all['pickup_datetime'].dt.hour
-    df_all['week_delta'] = df_all['pickup_datetime'].dt.weekday + ((df_all['pickup_datetime'].dt.hour + (df_all['pickup_datetime'].dt.minute / 60.0)) / 24.0)
+        # Geohash
+        precision = 12
+        geohash_features = {}
+        for _, row in df_all.iterrows():
+            _geohash(geohash_features, 'pickup_geohash_', row['pickup_latitude'], row['pickup_longitude'], precision=precision)
+            _geohash(geohash_features, 'dropoff_geohash_', row['dropoff_latitude'], row['dropoff_longitude'], precision=precision)
+        df_all = df_all.join(pd.DataFrame(geohash_features))
+        features.extend(list(geohash_features.keys()))
 
-    # Make time features cyclic
-    df_all['week_delta_sin'] = np.sin((df_all['week_delta'] / 7) * np.pi)**2
-    df_all['hour_sin'] = np.sin((df_all['hour'] / 24) * np.pi)**2
+        # Date times
+        df_all['month'] = df_all['pickup_datetime'].dt.month
+        df_all['weekofyear'] = df_all['pickup_datetime'].dt.weekofyear
+        df_all['weekday'] = df_all['pickup_datetime'].dt.weekday
+        df_all['hour'] = df_all['pickup_datetime'].dt.hour
+        df_all['week_delta'] = df_all['pickup_datetime'].dt.weekday + ((df_all['pickup_datetime'].dt.hour + (df_all['pickup_datetime'].dt.minute / 60.0)) / 24.0)
 
-    # Traffic (Count trips over 60min)
-    df_counts = df_all.set_index('pickup_datetime')[['id']].sort_index()
-    df_all = df_all.merge(df_counts, on='id', how='left')
+        # Make time features cyclic
+        df_all['week_delta_sin'] = np.sin((df_all['week_delta'] / 7) * np.pi)**2
+        df_all['hour_sin'] = np.sin((df_all['hour'] / 24) * np.pi)**2
 
-    # K means clustering
-    _clustering(X, df_all)
+        # Traffic (Count trips over 60min)
+        df_counts = df_all.set_index('pickup_datetime')[['id']].sort_index()
+        df_all = df_all.merge(df_counts, on='id', how='left')
 
-    # Get test set and train set from df_all
-    X_train = df_all[df_all['trip_duration'].notnull()]
-    y_train = df_all[df_all['trip_duration'].notnull()]['trip_duration_log'].values.flatten()
-    X_test = df_all[df_all['trip_duration'].isnull()]
-    test_ids = df_all[df_all['trip_duration'].isnull()]['id'].values
+        # K means clustering
+        _clustering(X, df_all)
 
-    # Add OSRM data
-    train_street_info, test_street_info, osrm_features = _osrm(datadir)
-    features.extend(osrm_features)
-    X_train = X_train.merge(train_street_info, how='left', on='id')[features]
-    X_test = X_test.merge(test_street_info, how='left', on='id')[features]
+        # Get test set and train set from df_all
+        X_train = df_all[df_all['trip_duration'].notnull()]
+        y_train = df_all[df_all['trip_duration'].notnull()]['trip_duration_log'].values.flatten()
+        X_test = df_all[df_all['trip_duration'].isnull()]
+        test_ids = df_all[df_all['trip_duration'].isnull()]['id'].values
 
-    # Fill missing osrm data
-    mean_distance, mean_travel_time, mean_steps = X_train.total_distance.mean(), X_train.total_travel_time.mean(), X_train.number_of_steps.mean()
+        # Add OSRM data
+        train_street_info, test_street_info, osrm_features = _osrm(datadir)
+        features.extend(osrm_features)
+        X_train = X_train.merge(train_street_info, how='left', on='id')[features]
+        X_test = X_test.merge(test_street_info, how='left', on='id')[features]
 
-    def _fillnan(df):
-        df.total_distance = df.total_distance.fillna(mean_distance)
-        df.total_travel_time = df.total_travel_time.fillna(mean_travel_time)
-        df.number_of_steps = df.number_of_steps.fillna(round(mean_steps))
-    _fillnan(X_train)
-    _fillnan(X_test)
+        # Fill missing osrm data
+        mean_distance, mean_travel_time, mean_steps = X_train.total_distance.mean(), X_train.total_travel_time.mean(), X_train.number_of_steps.mean()
 
-    # Split dataset into trainset and testset
-    train_data, valid_data, train_targets, valid_targets = train_test_split(X_train.values, y_train, test_size=valid_size, random_state=459)
+        def _fillnan(df):
+            df.total_distance = df.total_distance.fillna(mean_distance)
+            df.total_travel_time = df.total_travel_time.fillna(mean_travel_time)
+            df.number_of_steps = df.number_of_steps.fillna(round(mean_steps))
+        _fillnan(X_train)
+        _fillnan(X_test)
 
-    # Normalize feature columns
-    standardizer = preprocessing.StandardScaler()
-    train_data = standardizer.fit_transform(train_data)
-    valid_data = standardizer.transform(valid_data)
-    test_data = standardizer.transform(X_test.values)
+        # Split dataset into trainset and testset
+        train_data, valid_data, train_targets, valid_targets = train_test_split(X_train.values, y_train, test_size=valid_size, random_state=459)
 
-    return len(features), (test_ids, test_data), (train_data, valid_data, train_targets, valid_targets)
+        # Normalize feature columns
+        standardizer = preprocessing.StandardScaler()
+        train_data = standardizer.fit_transform(train_data)
+        valid_data = standardizer.transform(valid_data)
+        test_data = standardizer.transform(X_test.values)
+
+        return len(features), (test_ids, test_data), (train_data, valid_data, train_targets, valid_targets)
+    return _cached_load_data(datadir, trainset, testset, valid_size)

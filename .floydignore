@@ -10,7 +10,7 @@ parts
 sdist
 var
 
-.cache
+NYC_taxi_data_2016
 models
 notebooks
 *.npz
