@@ -16,7 +16,11 @@ cd ./NYC_TaxiTripDuration
 - Unzip dataset files located in 'NYC_taxi_data' directory
 
 ```bash
-unzip ./NYC_taxi_data_2016/cache.zip -d ./NYC_taxi_data_2016/
+unzip ./NYC_taxi_data_2016/NYC_taxi_data_2016.zip -d ./NYC_taxi_data_2016/
+# If you want to use OSRM features you should unzip OSRM data too:
+unzip ./NYC_taxi_data_2016/osrm/fastest_routes_test.zip -d ./NYC_taxi_data_2016/osrm
+unzip ./NYC_taxi_data_2016/osrm/fastest_routes_train_part_1.zip -d ./NYC_taxi_data_2016/osrm
+unzip ./NYC_taxi_data_2016/osrm/fastest_routes_train_part_2.zip -d ./NYC_taxi_data_2016/osrm
 ```
 
 - And train the model
