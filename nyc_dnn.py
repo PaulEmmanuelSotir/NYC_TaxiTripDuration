@@ -28,7 +28,7 @@ DEFAULT_HYPERPARAMETERS = {'epochs': 610,
                                'minimal_lr': 5e-8,
                                'keep_best_snapshot': 3
                            },
-                           'depth': 4,
+                           'depth': 10,
                            'hidden_size': 512,
                            'batch_size': 1024,
                            'early_stopping': None,
