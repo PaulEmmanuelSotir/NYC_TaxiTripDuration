@@ -1,6 +1,7 @@
 # NYC Taxi Trip Duration - Kaggle competition
 
-Kaggle competition submission using a simple fully connected neural network implemented on tensorflow and whose hyperparamters are optimized using hyperopt.
+Kaggle competition submission using a fully connected neural network implemented on tensorflow and whose hyperparamters are optimized using hyperopt.  
+Fully connected neural network is trained using warm resart cyclic learning rate with snaphsot ensembling (see papers [SGDR: SGD with warm resart](https://arxiv.org/pdf/1608.03983.pdf) and [Snapshot ensembles: train 1, get M for free](https://openreview.net/pdf?id=BJYwwY9ll)).
 
 ## Run instructions
 
