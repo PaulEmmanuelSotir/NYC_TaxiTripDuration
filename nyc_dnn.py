@@ -4,10 +4,6 @@
 Note that the code could probably be greatly simplified using tf.train.Supervisor and tf.contrib.learn.dnnregressor,
 but we prefer to define model by hand here to learn more about tensorflow python API (and for more flexibility).
 
-TODO:
-    * use CV
-    * improve early stoping (if windowed mean doesn't improve + compare with previous best rmse curves)
-
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
 import os
@@ -64,7 +60,7 @@ def bucketize(train_targets, valid_targets, bucket_count):
 
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
     with tf.variable_scope(name):
-        weights = tf.get_variable(initializer=utils.xavier_init(*shape, activation='tanh'), name='w',
+        weights = tf.get_variable(initializer=utils.xavier_init(activation='tanh')(shape), name='w',
                                   collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
         bias = tf.get_variable(initializer=tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
         logits = tf.add(tf.matmul(x, weights), bias)
@@ -79,16 +75,53 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
     return dense_do
 
 
+def _conv_layer(x, filters, kernel_size, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.elu, training=False):
+    with tf.variable_scope(name):
+        conv = tf.layers.conv1d(x, filters=filters, kernel_size=kernel_size, strides=1, padding='same', activation=None,
+                                kernel_initializer=utils.xavier_init(activation='relu'))
+        conv = tf.layers.batch_normalization(conv, training=training) if batch_norm else conv
+        conv = activation(conv) if activation is not None else conv
+        conv = tf.nn.dropout(conv, dropout_keep_prob)
+        """kernels = [...]
+        tf.get_variable('conv1d/kernel:0')
+        if summarize:
+            bias = ...
+            image = tf.reshape(kernels, [...])
+            tf.summary.image('kernels', image, collections=['extended_summary'])
+            tf.summary.histogram('bias', bias, collections=['extended_summary'])"""
+    return conv
 
 
 def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
     """ Define Tensorflow DNN model architechture """
+    hidden_size = hp['hidden_size']
     with tf.variable_scope('dnn'):
         # Define DNN layers
-        layer = _dense_layer(X, (n_input, hp['hidden_size']), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize, training=training)
+        layer = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize, training=training)
         for i in range(1, hp['depth'] - 1):
-            layer = _dense_layer(layer, (hp['hidden_size'], hp['hidden_size']), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
-        logits = _dense_layer(layer, (hp['hidden_size'], hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
+            layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
+        logits = _dense_layer(layer, (hidden_size, hidden_size), 1., 'output_layer', summarize=summarize, activation=None, training=training)
+    pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
+    return pred, logits
+
+
+def _build_cnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
+    hidden_size = hp['hidden_size']
+    with tf.variable_scope('cnn'):
+        # Define input fully connected layers
+        net = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer_1', batch_norm=False, summarize=summarize, training=training)
+        net = _dense_layer(net, (hidden_size, hidden_size), dropout_keep_prob, 'input_layer_2', summarize=summarize, training=training)
+
+        # Define convolutionnal layers
+        net = tf.reshape(net, shape=[-1, hidden_size, 1])
+        for i in range(1, hp['depth'] - 3):
+            net = _conv_layer(net, 32, 4, dropout_keep_prob, name='conv_' + str(i), summarize=summarize, training=training)
+        print(np.prod(net.shape[1:]))
+        net = tf.reshape(net, shape=[-1, np.prod(net.shape[1:])])
+
+        # Define output fully connected layers
+        net = _dense_layer(net, (32 * 494, hidden_size), dropout_keep_prob, 'output_layer_1', summarize=summarize, training=training)
+        logits = _dense_layer(net, (hidden_size, hidden_size), 1., 'output_layer_2', activation=None, summarize=summarize, training=training)
     pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
     return pred, logits
 
@@ -103,8 +136,9 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
         X = tf.placeholder(tf.float32, [None, n_input], name='X')
         labels = tf.placeholder(tf.int32, [None], name='labels')
         y = tf.placeholder(tf.float32, [None], name='y')
+        train = tf.placeholder_with_default(False, [], name='training')
 
-    pred, logits = _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize=summarize)
+    pred, logits = _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize=summarize, training=train)
     tf.summary.histogram('pred', pred, collections=['extended_summary'])
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred), name='rmse')
 
@@ -120,14 +154,14 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
 
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(), name='init_op')
-    return pred, rmse, loss, train_op, (lr, dropout_keep_prob, l2_reg, X, labels, y), tf.train.Saver(), init_op
+    return pred, rmse, loss, train_op, (lr, dropout_keep_prob, l2_reg, X, labels, y, train), tf.train.Saver(), init_op
 
 
 def train(model, dataset, train_labels, hp, save_dir, testset):
     # Unpack parameters and tensors
     train_data, valid_data, train_targets, valid_targets = dataset
     pred, rmse, loss, train_op, placeholders, saver, init_op = model
-    lr, dropout_keep_prob, l2_regularization, X, labels, y = placeholders
+    lr, dropout_keep_prob, l2_regularization, X, labels, y, training = placeholders
     wr_hp = hp.get('warm_resart_lr')
 
     # Start tensorflow session
@@ -145,11 +179,11 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
         cycle, epochs_since_improvement = 0, 0
         batch_per_epoch = int(np.ceil(len(train_data) / hp['batch_size']))
         for epoch in range(hp['epochs']):
-            # Train model using minibatches
-            mean_rmse, mean_loss, mean_lr = 0., 0., 0.
             # Shuffle trainset
             perm = np.random.permutation(len(train_data))
             train_data, train_labels, train_targets = (train_data[perm], train_labels[perm], train_targets[perm])
+            # Train model using minibatches
+            mean_rmse, mean_loss, mean_lr = 0., 0., 0.
             for step, range_min in zip(range(batch_per_epoch), range(0, len(train_data) - 1, hp['batch_size'])):
                 range_max = min(range_min + hp['batch_size'], len(train_data))
                 batch_rmse, batch_loss = sess.run(train_op, feed_dict={X: train_data[range_min:range_max],
@@ -157,7 +191,8 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
                                                                        labels: train_labels[range_min:range_max],
                                                                        lr: learning_rate,
                                                                        dropout_keep_prob: hp['dropout_keep_prob'],
-                                                                       l2_regularization: hp['l2_regularization']})
+                                                                       l2_regularization: hp['l2_regularization'],
+                                                                       training: True})
                 if wr_hp is not None:
                     learning_rate, new_cycle = utils.warm_restart(epoch + step / batch_per_epoch, t_0=wr_hp['initial_cycle_length'],
                                                                   max_lr=hp['lr'], min_lr=wr_hp['minimal_lr'], t_mult=wr_hp['lr_cycle_growth'])
@@ -199,17 +234,16 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
 
         def _predict_testset():
             predictions = []
-            for batch in range(np.ceil(len(testset) / PRED_BATCH_SIZE)):
+            for batch in range(int(np.ceil(len(testset) / PRED_BATCH_SIZE))):
                 batch_X = testset[batch * hp['batch_size']: min((batch + 1) * hp['batch_size'], len(testset))]
                 predictions.extend(sess.run(pred, feed_dict={X: batch_X}))
             return predictions
 
         print("Training done, best_rmse=%.6f" % best_rmse)
         ensemble_rmse = float('inf')
-        predictions = []
         if wr_hp is not None:
             # Apply last cycle snapshots on test and validation set and average softmax layers for prediction (snaphot ensembling)
-            valid_preds = []
+            predictions, valid_preds = [], []
             for snapshot in range(wr_hp['keep_best_snapshot']):
                 print('Applying snapshot #' + str(snapshot))
                 saver.restore(sess, os.path.join(save_dir, str(snapshot)) + '/')

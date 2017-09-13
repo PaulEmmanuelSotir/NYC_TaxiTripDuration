@@ -31,16 +31,17 @@ def tf_config(allow_growth=True, **kwargs):
     return config
 
 
-def xavier_init(fan_in, fan_out, activation='relu'):
+def xavier_init(activation='relu', mode='FAN_AVG'):
+    """
+    Xavier initialization
+    """
     if activation == 'relu':
-        scale = math.sqrt(2.)
+        scale = 2.
     elif activation == 'tanh':
-        scale = 4.
+        scale = 1.  # TODO: make sure this is the correct scale (some sources say ~1.32, others 4., but 1. seems to give better results)
     elif activation == 'sigmoid':
         scale = 1.
-    else:
-        raise ValueError('Invalid activation function for xavier initialization: "' + activation + '"')
-    return tf.truncated_normal([fan_in, fan_out], stddev=scale * math.sqrt(2. / (fan_in + fan_out)))
+    return tf.contrib.layers.variance_scaling_initializer(scale, mode=mode)  # TODO: change it to tf.variance_scaling_initializer on tensorflow 1.3+
 
 
 def cosine_annealing(x, max_lr, min_lr):
@@ -50,7 +51,7 @@ def cosine_annealing(x, max_lr, min_lr):
 def warm_restart(epoch, t_0, max_lr, min_lr=1e-8, t_mult=2, annealing_fn=cosine_annealing):
     """ Stochastic gradient descent with warm restarts of learning rate (see https://arxiv.org/pdf/1608.03983.pdf) """
     def _cycle_length(c): return t_0 * t_mult ** c
-    cycle = int(np.floor(np.log(- epoch / t_0 * (1 - t_mult) + 1) / np.log(t_mult)))
+    cycle = int(np.floor(np.log(1 - epoch / t_0 * (1 - t_mult)) / np.log(t_mult)))
     cycle_begining = np.sum([_cycle_length(c) for c in range(0, cycle)]) if cycle > 0 else 0.
     x = (epoch - cycle_begining) / _cycle_length(cycle)
     lr = min_lr + (max_lr - min_lr) * annealing_fn(x, max_lr, min_lr)
@@ -67,6 +68,7 @@ def add_summary_values(summary_writer, global_step=None, **values):
 
 class cd:
     """Context manager for changing the current working directory from https://stackoverflow.com/a/13197763/5323273"""
+
     def __init__(self, newPath):
         self.newPath = os.path.expanduser(newPath)
 
@@ -165,30 +167,3 @@ def get_model_from_floyd(floyd_project, floyd_job, models_dir, score=None, hyper
     if delete_job:
         floyd_delete(floyd_job)
     return entry
-
-
-def append_kaggle_score(kaggle_score, floyd_job=None, model_name=None):
-    assert (floyd_job is None) != (model_name is None), 'You must either specify model_name xor floyd_job.'
-    # Load score file
-    scores_path = os.path.join(MODELS_DIR, SCORES_FILE)
-    if not os.path.isfile(scores_path):
-        print("Can't find score file.")
-        return None
-    scores = np.load(scores_path)
-    # Search for concerned score entry
-    field, value = ('floyd_job', floyd_job) if floyd_job is not None else ('model_name', model_name)
-    found_scores = [(idx, s) for idx, s in enumerate(scores) if s[field] == value]
-    if len(found_scores) == 0:
-        print("Can't find specified model in score file, did you called 'get_model_from_floyd' first?")
-        return None
-    idx, score = found_scores[0]
-    # Add kaggle score and save scores file
-    score['kaggle_score'] = kaggle_score
-    scores[idx] = score
-    with open(scores_path, 'wb') as file:
-        np.save(file, scores)
-    return score
-
-
-def delete_model(floyd_job=None, model_name=None):
-    pass  # TODO: implement it
