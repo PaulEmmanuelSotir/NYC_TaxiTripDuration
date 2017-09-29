@@ -12,11 +12,8 @@ import subprocess
 import numpy as np
 import tensorflow as tf
 
-# TODO: ignore robots.txt while downloading with wget in order to have all files, including files begining with a dot?
-# TODO: snapshot ensembling proposed by https://arxiv.org/pdf/1704.00109.pdf
-
-__all__ = ['tf_config', 'xavier_init', 'cosine_annealing', 'warm_restart', 'add_summary_values',
-           'cd', 'floyd_run', 'floyd_stop', 'floyd_delete', 'get_model_from_floyd', 'append_kaggle_score']
+__all__ = ['tf_config', 'leaky_relu', 'xavier_init', 'warm_restart', 'add_summary_values',
+           'cd', 'floyd_run', 'floyd_stop', 'floyd_delete', 'get_model_from_floyd']
 
 PREDS_FILE = 'preds.csv'
 
@@ -31,24 +28,26 @@ def tf_config(allow_growth=True, **kwargs):
     return config
 
 
-def xavier_init(activation='relu', mode='FAN_AVG'):
+def leaky_relu(x, leak=0.2, name='leaky_relu'):
+    with tf.variable_scope(name):
+        f1 = 0.5 * (1 + leak)
+        f2 = 0.5 * (1 - leak)
+        return f1 * x + f2 * abs(x)
+
+
+def xavier_init(scale='relu', mode='fan_avg'):
     """
     Xavier initialization
     """
-    if activation == 'relu':
-        scale = 2.
-    elif activation == 'tanh':
-        scale = 1.  # TODO: make sure this is the correct scale (some sources say ~1.32, others 4., but 1. seems to give better results)
-    elif activation == 'sigmoid':
-        scale = 1.
-    return tf.contrib.layers.variance_scaling_initializer(scale, mode=mode)  # TODO: change it to tf.variance_scaling_initializer on tensorflow 1.3+
+    # TODO: make sure this is the correct scale for tanh (some sources say ~1.32, others 4., but 1. seems to give better results)
+    return tf.variance_scaling_initializer(2. if scale == 'relu' else 1., mode=mode)
 
 
-def cosine_annealing(x, max_lr, min_lr):
+def _cosine_annealing(x, max_lr, min_lr):
     return (np.cos(np.pi * x) + 1.) / 2.
 
 
-def warm_restart(epoch, t_0, max_lr, min_lr=1e-8, t_mult=2, annealing_fn=cosine_annealing):
+def warm_restart(epoch, t_0, max_lr, min_lr=1e-8, t_mult=2, annealing_fn=_cosine_annealing):
     """ Stochastic gradient descent with warm restarts of learning rate (see https://arxiv.org/pdf/1608.03983.pdf) """
     def _cycle_length(c): return t_0 * t_mult ** c
     cycle = int(np.floor(np.log(1 - epoch / t_0 * (1 - t_mult)) / np.log(t_mult)))

@@ -43,8 +43,8 @@ def _geohash(features, prefix, longitude, latitude, precision):
     _float_to_bits(latitude, lower=-90.0, upper=90.0)
 
 
-def _clustering(X, df_all):
-    kmeans = MiniBatchKMeans(n_clusters=8**2, batch_size=32**3).fit(X)
+def _clustering(coords, df_all):
+    kmeans = MiniBatchKMeans(n_clusters=8**2, batch_size=32**3).fit(coords)
     df_all['pickup_cluster'] = kmeans.predict(df_all[['pickup_latitude', 'pickup_longitude']])
     df_all['dropoff_cluster'] = kmeans.predict(df_all[['dropoff_latitude', 'dropoff_longitude']])
     df_all['pickup_datetime_group'] = df_all['pickup_datetime'].dt.round('60min')
@@ -59,6 +59,22 @@ def _osrm(datadir):
     return train_street_info, test_street_info, features
 
 
+def _haversine(lat1, lng1, lat2, lng2):
+    lat1, lng1, lat2, lng2 = map(np.radians, (lat1, lng1, lat2, lng2))
+    AVG_EARTH_RADIUS = 6371  # in km
+    lat = lat2 - lat1
+    lng = lng2 - lng1
+    d = np.sin(lat * 0.5) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(lng * 0.5) ** 2
+    h = 2 * AVG_EARTH_RADIUS * np.arcsin(np.sqrt(d))
+    return h
+
+
+def _manhattan(lat1, lng1, lat2, lng2):
+    a = _haversine(lat1, lng1, lat1, lng2)
+    b = _haversine(lat1, lng1, lat2, lng1)
+    return a + b
+
+
 def load_data(datadir, trainset, testset, valid_size, cache_read_only):
     if cache_read_only:
         dest = '/output/cache'
@@ -68,42 +84,43 @@ def load_data(datadir, trainset, testset, valid_size, cache_read_only):
 
     @memory.cache(ignore=['datadir'])
     def _cached_load_data(datadir, trainset, testset, valid_size):
-        features = ['vendor_id', 'passenger_count', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'pickup_pca0', 'pickup_pca1',
-                    'dropoff_pca0', 'dropoff_pca1', 'pca_manhattan', 'month', 'weekofyear', 'weekday', 'hour', 'week_delta', 'week_delta_sin', 'hour_sin']
+        features = ['vendor_id', 'passenger_count', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'pickup_pca0', 'pickup_pca1', 'hour',
+                    'dropoff_pca0', 'dropoff_pca1', 'pca_manhattan', 'month', 'weekofyear', 'weekday', 'seconds', 'week_delta', 'week_hour', 'week_delta_sin', 'hour_sin',
+                    'manhattan', 'haversine']
         df_all = pd.concat((pd.read_csv(os.path.join(datadir, trainset)), pd.read_csv(os.path.join(datadir, testset))))
         df_all['pickup_datetime'] = df_all['pickup_datetime'].apply(pd.Timestamp)
         df_all['dropoff_datetime'] = df_all['dropoff_datetime'].apply(pd.Timestamp)
         df_all['trip_duration_log'] = np.log(df_all['trip_duration'] + 1)
 
-        # Remove abnormal locations
-        X = np.vstack((df_all[['pickup_latitude', 'pickup_longitude']], df_all[['dropoff_latitude', 'dropoff_longitude']]))
-        min_lat, min_lng = X.mean(axis=0) - X.std(axis=0)
-        max_lat, max_lng = X.mean(axis=0) + X.std(axis=0)
-        X = X[(X[:, 0] > min_lat) & (X[:, 0] < max_lat) & (X[:, 1] > min_lng) & (X[:, 1] < max_lng)]
+        # Remove abnormal locations for PCA training
+        coords = np.vstack((df_all[['pickup_latitude', 'pickup_longitude']], df_all[['dropoff_latitude', 'dropoff_longitude']]))
+        min_lat, min_lng = coords.mean(axis=0) - coords.std(axis=0)
+        max_lat, max_lng = coords.mean(axis=0) + coords.std(axis=0)
+        coords = coords[(coords[:, 0] > min_lat) & (coords[:, 0] < max_lat) & (coords[:, 1] > min_lng) & (coords[:, 1] < max_lng)]
 
         # Get PCA features on location
-        pca = PCA().fit(X)
+        pca = PCA().fit(coords)
         df_all['pickup_pca0'] = pca.transform(df_all[['pickup_latitude', 'pickup_longitude']])[:, 0]
         df_all['pickup_pca1'] = pca.transform(df_all[['pickup_latitude', 'pickup_longitude']])[:, 1]
         df_all['dropoff_pca0'] = pca.transform(df_all[['dropoff_latitude', 'dropoff_longitude']])[:, 0]
         df_all['dropoff_pca1'] = pca.transform(df_all[['dropoff_latitude', 'dropoff_longitude']])[:, 1]
         df_all['pca_manhattan'] = (df_all['dropoff_pca0'] - df_all['pickup_pca0']).abs() + (df_all['dropoff_pca1'] - df_all['pickup_pca1']).abs()
 
-        # Geohash
-        precision = 12
-        geohash_features = {}
-        for _, row in df_all.iterrows():
-            _geohash(geohash_features, 'pickup_geohash_', row['pickup_latitude'], row['pickup_longitude'], precision=precision)
-            _geohash(geohash_features, 'dropoff_geohash_', row['dropoff_latitude'], row['dropoff_longitude'], precision=precision)
-        df_all = df_all.join(pd.DataFrame(geohash_features))
-        features.extend(list(geohash_features.keys()))
+        # Distances
+        df_all['haversine'] = _haversine(df_all['pickup_latitude'].values, df_all['pickup_longitude'].values,
+                                         df_all['dropoff_latitude'].values, df_all['dropoff_longitude'].values)
+        df_all['manhattan'] = _manhattan(df_all['pickup_latitude'].values, df_all['pickup_longitude'].values,
+                                         df_all['dropoff_latitude'].values, df_all['dropoff_longitude'].values)
 
         # Date times
         df_all['month'] = df_all['pickup_datetime'].dt.month
         df_all['weekofyear'] = df_all['pickup_datetime'].dt.weekofyear
         df_all['weekday'] = df_all['pickup_datetime'].dt.weekday
         df_all['hour'] = df_all['pickup_datetime'].dt.hour
-        df_all['week_delta'] = df_all['pickup_datetime'].dt.weekday + ((df_all['pickup_datetime'].dt.hour + (df_all['pickup_datetime'].dt.minute / 60.0)) / 24.0)
+        df_all['week_delta'] = df_all['pickup_datetime'].dt.weekday \
+            + ((df_all['pickup_datetime'].dt.hour + (df_all['pickup_datetime'].dt.minute / 60.0)) / 24.0)
+        df_all['week_hour'] = df_all['weekday'] * 24. + df_all['hour']
+        df_all['seconds'] = df_all['pickup_datetime'].dt.second + df_all['pickup_datetime'].dt.minute * 60.
 
         # Make time features cyclic
         df_all['week_delta_sin'] = np.sin((df_all['week_delta'] / 7) * np.pi)**2
@@ -114,7 +131,16 @@ def load_data(datadir, trainset, testset, valid_size, cache_read_only):
         df_all = df_all.merge(df_counts, on='id', how='left')
 
         # K means clustering
-        _clustering(X, df_all)
+        _clustering(coords, df_all)
+
+        # Geohash
+        precision = 12
+        geohash_features = {}
+        for _, row in df_all.iterrows():
+            _geohash(geohash_features, 'pickup_geohash_', row['pickup_latitude'], row['pickup_longitude'], precision=precision)
+            _geohash(geohash_features, 'dropoff_geohash_', row['dropoff_latitude'], row['dropoff_longitude'], precision=precision)
+        df_all = df_all.join(pd.DataFrame(geohash_features))
+        features.extend(list(geohash_features.keys()))
 
         # Get test set and train set from df_all
         X_train = df_all[df_all['trip_duration'].notnull()]

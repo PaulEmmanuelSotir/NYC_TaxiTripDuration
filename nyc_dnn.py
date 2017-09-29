@@ -8,7 +8,6 @@ but we prefer to define model by hand here to learn more about tensorflow python
 """
 import os
 import shutil
-import shutil
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -24,8 +23,7 @@ DEFAULT_HYPERPARAMETERS = {'epochs': 96,
                                'initial_cycle_length': 20,
                                'lr_cycle_growth': 1.5,
                                'minimal_lr': 5e-8,
-                               'keep_best_snapshot': 2
-                           },
+                               'keep_best_snapshot': 2},
                            'depth': 10,
                            'hidden_size': 512,
                            'batch_size': 1024,
@@ -60,7 +58,7 @@ def bucketize(train_targets, valid_targets, bucket_count):
 
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
     with tf.variable_scope(name):
-        weights = tf.get_variable(initializer=utils.xavier_init(activation='tanh')(shape), name='w',
+        weights = tf.get_variable(initializer=utils.xavier_init('tanh')(shape), name='w',
                                   collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
         bias = tf.get_variable(initializer=tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
         logits = tf.add(tf.matmul(x, weights), bias)
@@ -78,12 +76,12 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
 def _conv_layer(x, filters, kernel_size, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.elu, training=False):
     with tf.variable_scope(name):
         conv = tf.layers.conv1d(x, filters=filters, kernel_size=kernel_size, strides=1, padding='same', activation=None,
-                                kernel_initializer=utils.xavier_init(activation='relu'))
+                                kernel_initializer=utils.xavier_init('relu'))
         conv = tf.layers.batch_normalization(conv, training=training) if batch_norm else conv
         conv = activation(conv) if activation is not None else conv
         conv = tf.nn.dropout(conv, dropout_keep_prob)
-        """kernels = [...]
-        tf.get_variable('conv1d/kernel:0')
+        """
+        kernel = tf.get_variable('conv1d/kernel:0')
         if summarize:
             bias = ...
             image = tf.reshape(kernels, [...])
@@ -100,7 +98,7 @@ def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, train
         layer = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize, training=training)
         for i in range(1, hp['depth'] - 1):
             layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
-        logits = _dense_layer(layer, (hidden_size, hidden_size), 1., 'output_layer', summarize=summarize, activation=None, training=training)
+        logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
     pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
     return pred, logits
 
@@ -113,14 +111,14 @@ def _build_cnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, train
         net = _dense_layer(net, (hidden_size, hidden_size), dropout_keep_prob, 'input_layer_2', summarize=summarize, training=training)
 
         # Define convolutionnal layers
+        filters = 8
         net = tf.reshape(net, shape=[-1, hidden_size, 1])
         for i in range(1, hp['depth'] - 3):
-            net = _conv_layer(net, 32, 4, dropout_keep_prob, name='conv_' + str(i), summarize=summarize, training=training)
-        print(np.prod(net.shape[1:]))
-        net = tf.reshape(net, shape=[-1, np.prod(net.shape[1:])])
+            net = _conv_layer(net, filters, 4, dropout_keep_prob, name='conv_' + str(i), summarize=summarize, training=training)
+        net = tf.reshape(net, shape=[-1, filters * hidden_size])
 
         # Define output fully connected layers
-        net = _dense_layer(net, (32 * 494, hidden_size), dropout_keep_prob, 'output_layer_1', summarize=summarize, training=training)
+        net = _dense_layer(net, (filters * hidden_size, hidden_size), dropout_keep_prob, 'output_layer_1', summarize=summarize, training=training)
         logits = _dense_layer(net, (hidden_size, hidden_size), 1., 'output_layer_2', activation=None, summarize=summarize, training=training)
     pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
     return pred, logits
@@ -234,8 +232,8 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
 
         def _predict_testset():
             predictions = []
-            for batch in range(int(np.ceil(len(testset) / PRED_BATCH_SIZE))):
-                batch_X = testset[batch * hp['batch_size']: min((batch + 1) * hp['batch_size'], len(testset))]
+            for range_min in range(0, len(testset) - 1, PRED_BATCH_SIZE):
+                batch_X = testset[range_min: min(range_min + PRED_BATCH_SIZE, len(testset))]
                 predictions.extend(sess.run(pred, feed_dict={X: batch_X}))
             return predictions
 
