@@ -1,7 +1,10 @@
 # Ignore dataset csv files
-NYC_taxi_data_2016/*.csv
-NYC_taxi_data_2016/*.npz
+*.csv
+*.npz
+NYC_taxi_data_2016_cache/
+NYC_taxi_data_2016/cache/
 models/
+old_models/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
