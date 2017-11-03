@@ -3,6 +3,9 @@
 """ Hyperparameter optimization of DNN model
 Uses hyperopt module to search for optimal DNN hyper parameters.
 
+Note: 'output_size' can't be changed during hyperparameter search as data preprocessing depends on this parameter.
+      If you need to search over this parameter, make sure to re-execute 'feature_engineering.load_data' in '_objective' function.
+
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
 from sklearn.utils import resample
@@ -19,7 +22,7 @@ import utils
 import nyc_dnn
 
 # Full example of hyperparameter search space:
-#HP_SPACE = {'epochs': 200,
+# HP_SPACE = {'epochs': 200,
 #            'early_stopping': 20,
 #            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
 #            'opt': ho.hp.choice('opt', [tf.train.AdamOptimizer,
@@ -50,27 +53,37 @@ HP_SPACE = {'epochs': 200,
             'duration_std_margin': 5,
             'output_size': 1}
 
+
 def main():
     # Define working directories
     source_dir = os.path.dirname(os.path.abspath(__file__))
     save_dir = '/output/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'models/hyperopt_models/')
     dataset_dir = '/input/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'NYC_taxi_data_2016/')
 
-    # Load data and sample a subset of trainset
-    features_len, (pred_ids, predset), dataset = nyc_dnn.load_data(dataset_dir, 'train.csv', 'test.csv')
-    train_data, test_data, train_targets, test_targets = dataset
-    train_data, train_targets = resample(train_data, train_targets, replace=False, n_samples=int(SUB_TRAINSET_SIZE * len(train_data)))
-    dataset = (train_data, test_data, train_targets, test_targets)
+    # Load and preprocess data
+    features_len, (test_ids, testset), dataset, bucket_means = nyc_dnn.feature_engineering.load_data(dataset_dir,
+                                                                                                     'train.csv',
+                                                                                                     'test.csv',
+                                                                                                     nyc_dnn.VALID_SIZE,
+                                                                                                     HP_SPACE['output_size'],
+                                                                                                     tf.flags.FLAGS.floyd_job)
+
+    # Reduce trainset size (sample a subset of trainset)
+    train_data, test_data, train_targets, test_targets, train_labels, test_labels = dataset
+    train_data, train_targets, train_labels = resample(train_data, train_targets, train_labels,
+                                                       replace=False, n_samples=int(SUB_TRAINSET_SIZE * len(train_data)))
+    dataset = (train_data, test_data, train_targets, test_targets, train_labels, test_labels)
 
     # Define the objective function optimized by hyperopt
     eval_count = 0
+
     def _objective(hyperparameters):
         nonlocal eval_count
         eval_count += 1
         model_save_dir = save_dir + str(eval_count) + '/'
         print('\n\n' + '#' * 10 + ' TRYING HYPERPERPARAMETER SET #' + str(eval_count) + ' ' + '#' * 10)
         print(hyperparameters)
-		# Reset default tensorflow graph
+        # Reset default tensorflow graph
         tf.reset_default_graph()
         # Write hyperparameters to summary as text (once per session/model)
         hp_string = tf.placeholder(tf.string, name='hp')
@@ -84,11 +97,12 @@ def main():
         # Build model
         model = nyc_dnn.build_model(features_len, hyperparameters, bucket_means, summarize_parameters=False)
         # Train model
-        test_rmse, predictions = nyc_dnn.train(model, dataset, train_labels, test_labels, hyperparameters, model_save_dir, predset)
+        test_rmse, predictions = nyc_dnn.train(model, dataset, train_labels, test_labels, hyperparameters, model_save_dir, testset)
         # Save predictions to csv file for Kaggle submission
         predictions = np.int32(np.round(np.exp(predictions))) - 1
-        pd.DataFrame(np.column_stack([pred_ids, predictions]), columns=['id', 'trip_duration']).to_csv(os.path.join(save_dir, str(eval_count), 'preds.csv'), index=False)
-        return {'loss': test_rmse, # TODO: put last batch average loss here?
+        pd.DataFrame(np.column_stack([test_ids, predictions]), columns=['id', 'trip_duration']
+                     ).to_csv(os.path.join(save_dir, str(eval_count), 'preds.csv'), index=False)
+        return {'loss': test_rmse,  # TODO: put last batch average loss here?
                 'true_loss': test_rmse,
                 'status': ho.STATUS_OK,
                 'eval_time': time.time()}
@@ -101,7 +115,8 @@ def main():
                               max_evals=MAX_EVALS,
                               trials=trials)
     print('\n\n' + '#' * 20 + '  BEST HYPERPARAMETERS  ' + '#' * 20)
-    print(best_parameters) # TODO: translate ho.hp.choice hyperarameters from index to their actual value
+    print(best_parameters)  # TODO: translate ho.hp.choice hyperarameters from index to their actual value
+
 
 if __name__ == '__main__':
     tf.flags.DEFINE_bool('floyd-job', False, 'Change working directories for training on Floyd.')
