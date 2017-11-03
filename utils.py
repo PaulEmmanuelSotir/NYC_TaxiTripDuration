@@ -164,5 +164,5 @@ def get_model_from_floyd(floyd_project, floyd_job, models_dir, score=None, hyper
 
     # Delete Floyd job if asked so
     if delete_job:
-        floyd_delete(floyd_job)
+        floyd_delete(floyd_project, floyd_job)
     return entry
