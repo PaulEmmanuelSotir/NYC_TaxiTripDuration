@@ -67,8 +67,8 @@ def _build_dnn(X, n_input, hp, dropout_keep_prob, summarize, training=False):
             layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
         logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
         mu, sigma_logits, pi_logits = tf.split(logits, num_or_size_splits=3, axis=1)
-        pi = tf.nn.softmax(pi_logits)
-        sigma = tf.exp(sigma_logits)
+        pi = tf.nn.softmax(pi_logits, name='pi')
+        sigma = tf.exp(sigma_logits, name='sigma')
     return mu, sigma, pi
 
 
@@ -108,20 +108,22 @@ def build_graph(n_input, hp, summarize=True):
 
 
 def sample_MDN(mu, sigma, pi, num_samples=1):
-    # TODO: try to sample all needed random variables at once for better performances?
+    pi_rds = np.random.rand(len(pi), num_samples)
+    norm_rds = np.random.randn(len(pi), num_samples)
     samples = []
-    for distr_mu, distr_sigma, distr_pi in zip(mu, sigma, pi):
-        pi_samples = np.random.choice(len(distr_pi), p=distr_pi, size=(num_samples))
+    for distr_mu, distr_sigma, distr_pi, pi_rd, rd in zip(mu, sigma, pi, pi_rds, norm_rds):
+        pi_samples = np.clip(np.searchsorted(np.cumsum(distr_pi), pi_rd), 0, len(distr_pi) - 1)
         selected_mu = distr_mu[pi_samples]
         selected_sigma = distr_sigma[pi_samples]
-        # TODO: make sure this is correct for num_samples > 1
-        samples.append(np.random.normal(loc=selected_mu, scale=selected_sigma, size=(num_samples)))
+        samples.append(selected_mu + rd * selected_sigma)
     return samples
 
 
-def rmse(targets, mu, sigma, pi):
+def rmse(targets, target_mean, target_std, mu, sigma, pi):
     # Get samples from MDN output distribution to estimate rmse
     preds = np.reshape(sample_MDN(mu, sigma, pi), (-1))
+    preds = target_mean + preds * target_std
+    targets = target_mean + targets * target_std
     return np.sqrt(np.mean(np.square(targets - preds)))
 
 
@@ -131,6 +133,10 @@ def train(model, dataset, hp, save_dir, testset):
     (mu, sigma, pi), loss, train_op, placeholders, saver, init_op = model
     lr, dropout_keep_prob, l2_regularization, X, y, training = placeholders
     wr_hp = hp.get('warm_resart_lr')
+
+    target_std, target_mean = (np.std(train_targets), np.mean(train_targets))
+    train_targets = (train_targets - target_mean) / target_std
+    valid_targets = (valid_targets - target_mean) / target_std
 
     # Start tensorflow session
     with tf.Session(config=utils.tf_config(ALLOW_GPU_MEM_GROWTH)) as sess:
@@ -154,13 +160,13 @@ def train(model, dataset, hp, save_dir, testset):
             for step, range_min in zip(range(batch_per_epoch), range(0, len(train_data) - 1, hp['batch_size'])):
                 range_max = min(range_min + hp['batch_size'], len(train_data))
                 batch_targets = train_targets[range_min:range_max]
-                *outputs, batch_loss = sess.run(train_op, feed_dict={X: train_data[range_min:range_max],
-                                                                     y: batch_targets,
-                                                                     lr: learning_rate,
-                                                                     dropout_keep_prob: hp['dropout_keep_prob'],
-                                                                     l2_regularization: hp['l2_regularization'],
-                                                                     training: True})
-                batch_mse = np.square(rmse(batch_targets, *outputs))
+                * outputs, batch_loss = sess.run(train_op, feed_dict={X: train_data[range_min:range_max],
+                                                                      y: batch_targets,
+                                                                      lr: learning_rate,
+                                                                      dropout_keep_prob: hp['dropout_keep_prob'],
+                                                                      l2_regularization: hp['l2_regularization'],
+                                                                      training: True})
+                batch_mse = np.square(rmse(batch_targets, target_mean, target_std, *outputs))
                 # If we use warm restart learning rate cycles, we update learning rate accordingly
                 if wr_hp is not None:
                     learning_rate, new_cycle = utils.warm_restart(epoch + step / batch_per_epoch, t_0=wr_hp['initial_cycle_length'],
@@ -182,7 +188,7 @@ def train(model, dataset, hp, save_dir, testset):
                     summary_writer.add_summary(summary, epoch)
                 else:
                     outputs = sess.run([mu, sigma, pi], feed_dict={X: valid_data})
-                valid_rmse = rmse(valid_targets, *outputs)
+                valid_rmse = rmse(valid_targets, target_mean, target_std, *outputs)
                 utils.add_summary_values(summary_writer, global_step=epoch, valid_rmse=valid_rmse)
                 # Save snapshot if validation RMSE is the best encountered so far
                 if best_rmse > valid_rmse:
@@ -208,6 +214,7 @@ def train(model, dataset, hp, save_dir, testset):
                 batch_X = testset[range_min: min(range_min + PRED_BATCH_SIZE, len(testset))]
                 outputs = sess.run([mu, sigma, pi], feed_dict={X: batch_X})
                 predictions.extend(np.reshape(sample_MDN(*outputs), (-1)))
+            predictions = predictions * target_std + target_mean
             return predictions
 
         print("Training done, best_rmse=%.6f" % best_rmse)
@@ -219,7 +226,7 @@ def train(model, dataset, hp, save_dir, testset):
                 print('Applying snapshot #' + str(snapshot))
                 saver.restore(sess, os.path.join(save_dir, str(snapshot)) + '/')
                 outputs = sess.run([mu, sigma, pi], feed_dict={X: valid_data})
-                valid_rmse.append(rmse(valid_targets, *outputs))
+                valid_rmse.append(rmse(valid_targets, target_mean, target_std, *outputs))
                 predictions.append(_predict_testset())
 
             ensemble_rmse = np.sqrt(np.mean(np.square(valid_rmse)))
