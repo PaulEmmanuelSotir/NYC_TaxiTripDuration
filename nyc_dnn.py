@@ -7,6 +7,7 @@ but we prefer to define model by hand here to learn more about tensorflow python
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
 import os
+import sys
 import shutil
 import numpy as np
 import pandas as pd
@@ -15,7 +16,7 @@ import tensorflow as tf
 import feature_engineering
 import utils
 
-__all__ = ['bucketize', 'build_graph', 'train']
+__all__ = ['build_graph', 'train']
 
 DEFAULT_HYPERPARAMETERS = {'epochs': 96,
                            'lr': 0.1,
@@ -30,30 +31,13 @@ DEFAULT_HYPERPARAMETERS = {'epochs': 96,
                            'early_stopping': None,
                            'dropout_keep_prob': 1.,
                            'l2_regularization': 2.5e-4,
-                           'output_size': 512}
+                           'output_size': 3 * 64}
 
 VALID_SIZE = 100000
 EVALUATE_PERIOD = 1
 PRED_BATCH_SIZE = 64 * 1024
 ALLOW_GPU_MEM_GROWTH = True
 EXTENDED_SUMMARY_EVAL_PERIOD = 40
-
-
-def bucketize(train_targets, valid_targets, bucket_count):
-    """ Process buckets from train targets and deduce labels of trainset and testset """
-    sorted_targets = np.sort(train_targets)
-    bucket_size = len(sorted_targets) // bucket_count
-    buckets = [sorted_targets[i * bucket_size: (1 + i) * bucket_size] for i in range(bucket_count)]
-    # Bucketize targets (TODO: try soft classes)
-    bucket_maxs = [np.max(b) for b in buckets]
-    bucket_maxs[-1] = float('inf')
-
-    def _find_indice(value): return np.searchsorted(bucket_maxs, value)
-    train_labels = np.vectorize(_find_indice)(train_targets)
-    valid_labels = np.vectorize(_find_indice)(valid_targets)
-    # Process buckets means
-    buckets_means = tf.constant([np.mean(bucket) for bucket in buckets], dtype=tf.float32, name='buckets_means')
-    return train_labels, valid_labels, buckets_means
 
 
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
@@ -73,24 +57,7 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
     return dense_do
 
 
-def _conv_layer(x, filters, kernel_size, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.elu, training=False):
-    with tf.variable_scope(name):
-        conv = tf.layers.conv1d(x, filters=filters, kernel_size=kernel_size, strides=1, padding='same', activation=None,
-                                kernel_initializer=utils.xavier_init('relu'))
-        conv = tf.layers.batch_normalization(conv, training=training) if batch_norm else conv
-        conv = activation(conv) if activation is not None else conv
-        conv = tf.nn.dropout(conv, dropout_keep_prob)
-        """
-        kernel = tf.get_variable('conv1d/kernel:0')
-        if summarize:
-            bias = ...
-            image = tf.reshape(kernels, [...])
-            tf.summary.image('kernels', image, collections=['extended_summary'])
-            tf.summary.histogram('bias', bias, collections=['extended_summary'])"""
-    return conv
-
-
-def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
+def _build_dnn(X, n_input, hp, dropout_keep_prob, summarize, training=False):
     """ Define Tensorflow DNN model architechture """
     hidden_size = hp['hidden_size']
     with tf.variable_scope('dnn'):
@@ -99,32 +66,20 @@ def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, train
         for i in range(1, hp['depth'] - 1):
             layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
         logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
-    pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
-    return pred, logits
+        mu, sigma_logits, pi_logits = tf.split(logits, num_or_size_splits=3, axis=1)
+        pi = tf.nn.softmax(pi_logits)
+        sigma = tf.exp(sigma_logits)
+    return mu, sigma, pi
 
 
-def _build_cnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
-    hidden_size = hp['hidden_size']
-    with tf.variable_scope('cnn'):
-        # Define input fully connected layers
-        net = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer_1', batch_norm=False, summarize=summarize, training=training)
-        net = _dense_layer(net, (hidden_size, hidden_size), dropout_keep_prob, 'input_layer_2', summarize=summarize, training=training)
-
-        # Define convolutionnal layers
-        filters = 8
-        net = tf.reshape(net, shape=[-1, hidden_size, 1])
-        for i in range(1, hp['depth'] - 3):
-            net = _conv_layer(net, filters, 4, dropout_keep_prob, name='conv_' + str(i), summarize=summarize, training=training)
-        net = tf.reshape(net, shape=[-1, filters * hidden_size])
-
-        # Define output fully connected layers
-        net = _dense_layer(net, (filters * hidden_size, hidden_size), dropout_keep_prob, 'output_layer_1', summarize=summarize, training=training)
-        logits = _dense_layer(net, (hidden_size, hidden_size), 1., 'output_layer_2', activation=None, summarize=summarize, training=training)
-    pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
-    return pred, logits
+def gaussian_mixture_loss(y, mu, sigma, pi):
+    with tf.variable_scope('gauss_mixture_xentropy'):
+        log_normalization = 0.5 * np.log(2. * np.pi) + tf.log(sigma)
+        normal = tf.exp(- 0.5 * tf.square((y - mu) / sigma) - log_normalization)
+        return tf.reduce_mean(-tf.log(tf.reduce_sum(pi * normal, axis=1)), name='gaussian_mixture_loss')
 
 
-def build_graph(n_input, hp, bucket_means, summarize=True):
+def build_graph(n_input, hp, summarize=True):
     """ Build Tensorflow training, validation and testing graph """
     # Define inputs
     with tf.variable_scope('inputs'):
@@ -132,34 +87,49 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
         dropout_keep_prob = tf.placeholder_with_default(1., [], name='dropout_keep_prob')
         l2_reg = tf.placeholder(tf.float32, [], name='l2_regularization')
         X = tf.placeholder(tf.float32, [None, n_input], name='X')
-        labels = tf.placeholder(tf.int32, [None], name='labels')
         y = tf.placeholder(tf.float32, [None], name='y')
         train = tf.placeholder_with_default(False, [], name='training')
 
-    pred, logits = _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize=summarize, training=train)
-    tf.summary.histogram('pred', pred, collections=['extended_summary'])
-    rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred), name='rmse')
+    mu, sigma, pi = _build_dnn(X, n_input, hp, dropout_keep_prob, summarize=summarize, training=train)
 
     # Define loss and optimizer
     with tf.variable_scope('L2_regularization'):
         L2 = l2_reg * tf.add_n([tf.nn.l2_loss(w) for w in tf.get_collection('weights')])
-    loss = tf.losses.sparse_softmax_cross_entropy(labels, logits) + L2
+    loss = gaussian_mixture_loss(tf.reshape(y, [-1, 1]), mu, sigma, pi) + L2
     optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=0.9)
     grads_and_vars = optimizer.compute_gradients(loss)
     with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
         apply_grad = optimizer.apply_gradients(grads_and_vars)
-    train_op = tf.tuple([rmse, loss], control_inputs=[apply_grad], name='train_ops')
+    train_op = tf.tuple([mu, sigma, pi, loss], control_inputs=[apply_grad], name='train_ops')
 
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(), name='init_op')
-    return pred, rmse, loss, train_op, (lr, dropout_keep_prob, l2_reg, X, labels, y, train), tf.train.Saver(), init_op
+    return (mu, sigma, pi), loss, train_op, (lr, dropout_keep_prob, l2_reg, X, y, train), tf.train.Saver(), init_op
 
 
-def train(model, dataset, train_labels, hp, save_dir, testset):
+def sample_MDN(mu, sigma, pi, num_samples=1):
+    # TODO: try to sample all needed random variables at once for better performances?
+    samples = []
+    for distr_mu, distr_sigma, distr_pi in zip(mu, sigma, pi):
+        pi_samples = np.random.choice(len(distr_pi), p=distr_pi, size=(num_samples))
+        selected_mu = distr_mu[pi_samples]
+        selected_sigma = distr_sigma[pi_samples]
+        # TODO: make sure this is correct for num_samples > 1
+        samples.append(np.random.normal(loc=selected_mu, scale=selected_sigma, size=(num_samples)))
+    return samples
+
+
+def rmse(targets, mu, sigma, pi):
+    # Get samples from MDN output distribution to estimate rmse
+    preds = np.reshape(sample_MDN(mu, sigma, pi), (-1))
+    return np.sqrt(np.mean(np.square(targets - preds)))
+
+
+def train(model, dataset, hp, save_dir, testset):
     # Unpack parameters and tensors
     train_data, valid_data, train_targets, valid_targets = dataset
-    pred, rmse, loss, train_op, placeholders, saver, init_op = model
-    lr, dropout_keep_prob, l2_regularization, X, labels, y, training = placeholders
+    (mu, sigma, pi), loss, train_op, placeholders, saver, init_op = model
+    lr, dropout_keep_prob, l2_regularization, X, y, training = placeholders
     wr_hp = hp.get('warm_resart_lr')
 
     # Start tensorflow session
@@ -173,24 +143,25 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
         # Training loop
         best_rmse = float('inf')
         learning_rate = hp['lr']
-        mean_rmse, mean_loss, mean_lr = 0., 0., 0.
         cycle, epochs_since_improvement = 0, 0
         batch_per_epoch = int(np.ceil(len(train_data) / hp['batch_size']))
         for epoch in range(hp['epochs']):
             # Shuffle trainset
             perm = np.random.permutation(len(train_data))
-            train_data, train_labels, train_targets = (train_data[perm], train_labels[perm], train_targets[perm])
+            train_data, train_targets = (train_data[perm], train_targets[perm])
             # Train model using minibatches
-            mean_rmse, mean_loss, mean_lr = 0., 0., 0.
+            mean_mse, mean_loss, mean_lr = 0., 0., 0.
             for step, range_min in zip(range(batch_per_epoch), range(0, len(train_data) - 1, hp['batch_size'])):
                 range_max = min(range_min + hp['batch_size'], len(train_data))
-                batch_rmse, batch_loss = sess.run(train_op, feed_dict={X: train_data[range_min:range_max],
-                                                                       y: train_targets[range_min:range_max],
-                                                                       labels: train_labels[range_min:range_max],
-                                                                       lr: learning_rate,
-                                                                       dropout_keep_prob: hp['dropout_keep_prob'],
-                                                                       l2_regularization: hp['l2_regularization'],
-                                                                       training: True})
+                batch_targets = train_targets[range_min:range_max]
+                *outputs, batch_loss = sess.run(train_op, feed_dict={X: train_data[range_min:range_max],
+                                                                     y: batch_targets,
+                                                                     lr: learning_rate,
+                                                                     dropout_keep_prob: hp['dropout_keep_prob'],
+                                                                     l2_regularization: hp['l2_regularization'],
+                                                                     training: True})
+                batch_mse = np.square(rmse(batch_targets, *outputs))
+                # If we use warm restart learning rate cycles, we update learning rate accordingly
                 if wr_hp is not None:
                     learning_rate, new_cycle = utils.warm_restart(epoch + step / batch_per_epoch, t_0=wr_hp['initial_cycle_length'],
                                                                   max_lr=hp['lr'], min_lr=wr_hp['minimal_lr'], t_mult=wr_hp['lr_cycle_growth'])
@@ -198,19 +169,20 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
                         print('New learning rate cycle.')
                         epochs_since_improvement = 0  # We reset early stoping for each lr cycles
                         cycle += 1
-                mean_rmse += (range_max - range_min) * batch_rmse / len(train_data)
+                mean_mse += (range_max - range_min) * batch_mse / len(train_data)
                 mean_loss += (range_max - range_min) * batch_loss / len(train_data)
                 mean_lr += (range_max - range_min) * learning_rate / len(train_data)
 
             # Evaluate model and display progress
-            utils.add_summary_values(summary_writer, global_step=epoch, mean_rmse=mean_rmse, mean_loss=mean_loss, mean_lr=mean_lr)
+            utils.add_summary_values(summary_writer, global_step=epoch, mean_rmse=np.sqrt(mean_mse), mean_loss=mean_loss, mean_lr=mean_lr)
             if epoch % EVALUATE_PERIOD == 0:
                 # Process RMSE on validation set
                 if (epoch // EVALUATE_PERIOD) % EXTENDED_SUMMARY_EVAL_PERIOD == 0:
-                    valid_rmse, summary = sess.run([rmse, extended_summary_op], feed_dict={X: valid_data, y: valid_targets})
+                    *outputs, summary = sess.run([mu, sigma, pi, extended_summary_op], feed_dict={X: valid_data})
                     summary_writer.add_summary(summary, epoch)
                 else:
-                    valid_rmse = sess.run(rmse, feed_dict={X: valid_data, y: valid_targets})
+                    outputs = sess.run([mu, sigma, pi], feed_dict={X: valid_data})
+                valid_rmse = rmse(valid_targets, *outputs)
                 utils.add_summary_values(summary_writer, global_step=epoch, valid_rmse=valid_rmse)
                 # Save snapshot if validation RMSE is the best encountered so far
                 if best_rmse > valid_rmse:
@@ -234,22 +206,23 @@ def train(model, dataset, train_labels, hp, save_dir, testset):
             predictions = []
             for range_min in range(0, len(testset) - 1, PRED_BATCH_SIZE):
                 batch_X = testset[range_min: min(range_min + PRED_BATCH_SIZE, len(testset))]
-                predictions.extend(sess.run(pred, feed_dict={X: batch_X}))
+                outputs = sess.run([mu, sigma, pi], feed_dict={X: batch_X})
+                predictions.extend(np.reshape(sample_MDN(*outputs), (-1)))
             return predictions
 
         print("Training done, best_rmse=%.6f" % best_rmse)
         ensemble_rmse = float('inf')
         if wr_hp is not None:
             # Apply last cycle snapshots on test and validation set and average softmax layers for prediction (snaphot ensembling)
-            predictions, valid_preds = [], []
+            predictions, valid_rmse = [], []
             for snapshot in range(wr_hp['keep_best_snapshot']):
                 print('Applying snapshot #' + str(snapshot))
                 saver.restore(sess, os.path.join(save_dir, str(snapshot)) + '/')
-                valid_preds.append(sess.run(pred, feed_dict={X: valid_data, y: valid_targets}))
+                outputs = sess.run([mu, sigma, pi], feed_dict={X: valid_data})
+                valid_rmse.append(rmse(valid_targets, *outputs))
                 predictions.append(_predict_testset())
 
-            predictions = np.mean(predictions, axis=0)
-            ensemble_rmse = np.sqrt(np.mean((np.mean(valid_preds, axis=0) - valid_targets) ** 2))
+            ensemble_rmse = np.sqrt(np.mean(np.square(valid_rmse)))
             print('Ensemble valid_rmse=' + str(ensemble_rmse))
         if ensemble_rmse > best_rmse:
             # Restore best model snapshot and apply prediction
@@ -271,16 +244,12 @@ def main(_=None):
     # Parse and preprocess data
     features_len, (test_ids, testset), dataset = feature_engineering.load_data(dataset_dir, 'train.csv', 'test.csv', VALID_SIZE, tf.flags.FLAGS.floyd_job)
 
-    # Get buckets from train targets
-    (_, _, train_targets, valid_targets) = dataset
-    train_labels, _, bucket_means = bucketize(train_targets, valid_targets, hyperparameters['output_size'])
-
     # Build model
-    model = build_graph(features_len, hyperparameters, bucket_means)
+    model = build_graph(features_len, hyperparameters)
 
     # Train model
     print('Model built, starting training.')
-    _, test_preds = train(model, dataset, train_labels, hyperparameters, save_dir, testset)
+    _, test_preds = train(model, dataset, hyperparameters, save_dir, testset)
 
     # Save predictions to csv file for Kaggle submission
     test_preds = np.int32(np.round(np.exp(test_preds))) - 1
