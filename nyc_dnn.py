@@ -15,7 +15,7 @@ import tensorflow as tf
 import feature_engineering
 import utils
 
-__all__ = ['bucketize', 'build_graph', 'train']
+__all__ = ['build_graph', 'train']
 
 DEFAULT_HYPERPARAMETERS = {'epochs': 96,
                            'lr': 0.1,
@@ -37,23 +37,6 @@ EVALUATE_PERIOD = 1
 PRED_BATCH_SIZE = 64 * 1024
 ALLOW_GPU_MEM_GROWTH = True
 EXTENDED_SUMMARY_EVAL_PERIOD = 40
-
-
-def bucketize(train_targets, valid_targets, bucket_count):
-    """ Process buckets from train targets and deduce labels of trainset and testset """
-    sorted_targets = np.sort(train_targets)
-    bucket_size = len(sorted_targets) // bucket_count
-    buckets = [sorted_targets[i * bucket_size: (1 + i) * bucket_size] for i in range(bucket_count)]
-    # Bucketize targets (TODO: try soft classes)
-    bucket_maxs = [np.max(b) for b in buckets]
-    bucket_maxs[-1] = float('inf')
-
-    def _find_indice(value): return np.searchsorted(bucket_maxs, value)
-    train_labels = np.vectorize(_find_indice)(train_targets)
-    valid_labels = np.vectorize(_find_indice)(valid_targets)
-    # Process buckets means
-    buckets_means = tf.constant([np.mean(bucket) for bucket in buckets], dtype=tf.float32, name='buckets_means')
-    return train_labels, valid_labels, buckets_means
 
 
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
@@ -136,6 +119,7 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
         y = tf.placeholder(tf.float32, [None], name='y')
         train = tf.placeholder_with_default(False, [], name='training')
 
+    bucket_means = tf.constant(bucket_means, dtype=tf.float32, name='buckets_means')
     pred, logits = _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize=summarize, training=train)
     tf.summary.histogram('pred', pred, collections=['extended_summary'])
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred), name='rmse')
@@ -143,7 +127,7 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
     # Define loss and optimizer
     with tf.variable_scope('L2_regularization'):
         L2 = l2_reg * tf.add_n([tf.nn.l2_loss(w) for w in tf.get_collection('weights')])
-    loss = tf.losses.sparse_softmax_cross_entropy(labels, logits) + L2
+    loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits) + L2
     optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=0.9)
     grads_and_vars = optimizer.compute_gradients(loss)
     with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
@@ -155,9 +139,9 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
     return pred, rmse, loss, train_op, (lr, dropout_keep_prob, l2_reg, X, labels, y, train), tf.train.Saver(), init_op
 
 
-def train(model, dataset, train_labels, hp, save_dir, testset):
+def train(model, dataset, hp, save_dir, testset):
     # Unpack parameters and tensors
-    train_data, valid_data, train_targets, valid_targets = dataset
+    train_data, valid_data, train_targets, valid_targets, train_labels, _ = dataset
     pred, rmse, loss, train_op, placeholders, saver, init_op = model
     lr, dropout_keep_prob, l2_regularization, X, labels, y, training = placeholders
     wr_hp = hp.get('warm_resart_lr')
@@ -269,18 +253,19 @@ def main(_=None):
     print('Hyperparameters:\n' + str(hyperparameters))
 
     # Parse and preprocess data
-    features_len, (test_ids, testset), dataset = feature_engineering.load_data(dataset_dir, 'train.csv', 'test.csv', VALID_SIZE, tf.flags.FLAGS.floyd_job)
-
-    # Get buckets from train targets
-    (_, _, train_targets, valid_targets) = dataset
-    train_labels, _, bucket_means = bucketize(train_targets, valid_targets, hyperparameters['output_size'])
+    features_len, (test_ids, testset), dataset, bucket_means = feature_engineering.load_data(dataset_dir,
+                                                                                             'train.csv',
+                                                                                             'test.csv',
+                                                                                             VALID_SIZE,
+                                                                                             hyperparameters['output_size'],
+                                                                                             tf.flags.FLAGS.floyd_job)
 
     # Build model
     model = build_graph(features_len, hyperparameters, bucket_means)
 
     # Train model
     print('Model built, starting training.')
-    _, test_preds = train(model, dataset, train_labels, hyperparameters, save_dir, testset)
+    _, test_preds = train(model, dataset, hyperparameters, save_dir, testset)
 
     # Save predictions to csv file for Kaggle submission
     test_preds = np.int32(np.round(np.exp(test_preds))) - 1
