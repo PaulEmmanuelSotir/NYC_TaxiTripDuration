@@ -35,12 +35,12 @@ def leaky_relu(x, leak=0.2, name='leaky_relu'):
         return f1 * x + f2 * abs(x)
 
 
-def xavier_init(scale='relu', mode='fan_avg'):
+def xavier_init(relu_scale=True, mode='fan_avg'):
     """
     Xavier initialization
     """
     # TODO: make sure this is the correct scale for tanh (some sources say ~1.32, others 4., but 1. seems to give better results)
-    return tf.variance_scaling_initializer(2. if scale == 'relu' else 1., mode=mode)
+    return tf.variance_scaling_initializer(2. if relu_scale else 1., mode=mode)
 
 
 def _cosine_annealing(x, max_lr, min_lr):

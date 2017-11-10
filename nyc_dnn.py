@@ -41,7 +41,7 @@ EXTENDED_SUMMARY_EVAL_PERIOD = 40
 
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
     with tf.variable_scope(name):
-        weights = tf.get_variable(initializer=utils.xavier_init('tanh')(shape), name='w',
+        weights = tf.get_variable(initializer=utils.xavier_init(relu_scale=False)(shape), name='w',
                                   collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
         bias = tf.get_variable(initializer=tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
         logits = tf.add(tf.matmul(x, weights), bias)
@@ -58,8 +58,7 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
 
 def _conv_layer(x, filters, kernel_size, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.elu, training=False):
     with tf.variable_scope(name):
-        conv = tf.layers.conv1d(x, filters=filters, kernel_size=kernel_size, strides=1, padding='same', activation=None,
-                                kernel_initializer=utils.xavier_init('relu'))
+        conv = tf.layers.conv1d(x, filters=filters, kernel_size=kernel_size, strides=1, padding='same', activation=None, kernel_initializer=utils.xavier_init())
         conv = tf.layers.batch_normalization(conv, training=training) if batch_norm else conv
         conv = activation(conv) if activation is not None else conv
         conv = tf.nn.dropout(conv, dropout_keep_prob)
