@@ -175,7 +175,6 @@ def load_data(datadir, trainset, testset, valid_size, output_size, cache_read_on
 
         return len(features), (test_ids, test_data), (train_data, valid_data, train_targets, valid_targets)
 
-    @memory.cache
     def _bucketize(train_targets, valid_targets, bucket_count):
         """ Process buckets from train targets and deduce labels of trainset and testset """
         sorted_targets = np.sort(train_targets)
@@ -190,30 +189,6 @@ def load_data(datadir, trainset, testset, valid_size, output_size, cache_read_on
         valid_labels = np.vectorize(_find_indice)(valid_targets)
         # Process buckets means
         buckets_means = [np.mean(bucket) for bucket in buckets]
-        return train_labels, valid_labels, buckets_means
-
-    # TODO: Before removing this method, make further experiments to make sure using soft classes doesn't improve performances
-    @memory.cache
-    def _bucketize_soft_classes(train_targets, valid_targets, bucket_count):
-        """ Process buckets from train targets and deduce labels of trainset and testset """
-        sorted_targets = np.sort(train_targets)
-        bucket_size = len(sorted_targets) // bucket_count
-        buckets = [sorted_targets[i * bucket_size: (1 + i) * bucket_size] for i in range(bucket_count)]
-        buckets_means = np.asarray([np.mean(bucket) for bucket in buckets])
-        bucket_maxs = [np.max(b) for b in buckets]
-        bucket_maxs[-1] = float('inf')
-
-        def _gauss(mu):
-            idx = np.searchsorted(bucket_maxs, mu)
-            sigma = (np.max(buckets[idx]) - np.min(buckets[idx])) / 2.
-            soft_classes = np.exp(-((buckets_means - mu)**2 / (2.0 * sigma**2)))
-            distrib_sum = np.sum(soft_classes)
-            if distrib_sum > 0. and not np.isnan(soft_classes).any():
-                soft_classes /= distrib_sum
-            soft_classes[idx] += 1. - np.nansum(soft_classes)
-            return soft_classes
-        train_labels = np.asarray([_gauss(t) for t in train_targets])
-        valid_labels = np.asarray([_gauss(t) for t in valid_targets])
         return train_labels, valid_labels, buckets_means
 
     # Parse and preprocess data
