@@ -39,14 +39,15 @@ ALLOW_GPU_MEM_GROWTH = True
 EXTENDED_SUMMARY_EVAL_PERIOD = 40
 
 
-def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, training=False):
+
+def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, init=utils.tanh_xavier_avg, training=False):
     with tf.variable_scope(name):
-        weights = tf.get_variable(initializer=utils.xavier_init(relu_scale=False)(shape), name='w',
-                                  collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
+        weights = tf.get_variable(initializer=init(shape), name='w', collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
         bias = tf.get_variable(initializer=tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
         logits = tf.add(tf.matmul(x, weights), bias)
-        logits_bn = tf.layers.batch_normalization(logits, training=training) if batch_norm else logits
-        dense = activation(logits_bn) if activation is not None else logits_bn
+        if batch_norm:
+            logits = tf.layers.batch_normalization(logits, training=training, name='batch_norm')
+        dense = activation(logits) if activation is not None else logits
         dense_do = tf.nn.dropout(dense, dropout_keep_prob)
         if summarize:
             image = tf.reshape(weights, [1, weights.shape[0].value, weights.shape[1].value, 1])
@@ -56,20 +57,6 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
     return dense_do
 
 
-def _conv_layer(x, filters, kernel_size, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.elu, training=False):
-    with tf.variable_scope(name):
-        conv = tf.layers.conv1d(x, filters=filters, kernel_size=kernel_size, strides=1, padding='same', activation=None, kernel_initializer=utils.xavier_init())
-        conv = tf.layers.batch_normalization(conv, training=training) if batch_norm else conv
-        conv = activation(conv) if activation is not None else conv
-        conv = tf.nn.dropout(conv, dropout_keep_prob)
-        """
-        kernel = tf.get_variable('conv1d/kernel:0')
-        if summarize:
-            bias = ...
-            image = tf.reshape(kernels, [...])
-            tf.summary.image('kernels', image, collections=['extended_summary'])
-            tf.summary.histogram('bias', bias, collections=['extended_summary'])"""
-    return conv
 
 
 def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
@@ -81,27 +68,6 @@ def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, train
         for i in range(1, hp['depth'] - 1):
             layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
         logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
-    pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
-    return pred, logits
-
-
-def _build_cnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
-    hidden_size = hp['hidden_size']
-    with tf.variable_scope('cnn'):
-        # Define input fully connected layers
-        net = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer_1', batch_norm=False, summarize=summarize, training=training)
-        net = _dense_layer(net, (hidden_size, hidden_size), dropout_keep_prob, 'input_layer_2', summarize=summarize, training=training)
-
-        # Define convolutionnal layers
-        filters = 8
-        net = tf.reshape(net, shape=[-1, hidden_size, 1])
-        for i in range(1, hp['depth'] - 3):
-            net = _conv_layer(net, filters, 4, dropout_keep_prob, name='conv_' + str(i), summarize=summarize, training=training)
-        net = tf.reshape(net, shape=[-1, filters * hidden_size])
-
-        # Define output fully connected layers
-        net = _dense_layer(net, (filters * hidden_size, hidden_size), dropout_keep_prob, 'output_layer_1', summarize=summarize, training=training)
-        logits = _dense_layer(net, (hidden_size, hidden_size), 1., 'output_layer_2', activation=None, summarize=summarize, training=training)
     pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
     return pred, logits
 
@@ -123,11 +89,11 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
     tf.summary.histogram('pred', pred, collections=['extended_summary'])
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred), name='rmse')
 
-    # Define loss and optimizer
+    # Define loss function (cross entropy and L2 regularization) and optimizer
     with tf.variable_scope('L2_regularization'):
         L2 = l2_reg * tf.add_n([tf.nn.l2_loss(w) for w in tf.get_collection('weights')])
     loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits) + L2
-    optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=0.9)
+    optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=hp['momentum'])
     grads_and_vars = optimizer.compute_gradients(loss)
     with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
         apply_grad = optimizer.apply_gradients(grads_and_vars)

@@ -12,14 +12,22 @@ import subprocess
 import numpy as np
 import tensorflow as tf
 
-__all__ = ['tf_config', 'leaky_relu', 'xavier_init', 'warm_restart', 'add_summary_values',
-           'cd', 'floyd_run', 'floyd_stop', 'floyd_delete', 'get_model_from_floyd']
+__all__ = ['tf_config', 'leaky_relu', 'tanh_xavier_avg', 'relu_xavier_avg', 'linear_xavier_avg', 'warm_restart',
+           'add_summary_values', 'cd', 'floyd_run', 'floyd_stop', 'floyd_delete', 'get_model_from_floyd']
 
 PREDS_FILE = 'preds.csv'
 
 CMD_ENCODING = 'latin-1'
 SCORES_FILE = 'scores.npz'
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Xavier initialization helpers
+RELU_XAVIER_SCALE = 2.
+TANH_XAVIER_SCALE = 4.
+LINEAR_XAVIER_SCALE = 1.
+relu_xavier_avg = tf.variance_scaling_initializer(RELU_XAVIER_SCALE, mode="fan_avg")
+tanh_xavier_avg = tf.variance_scaling_initializer(TANH_XAVIER_SCALE, mode="fan_avg")
+linear_xavier_avg = tf.variance_scaling_initializer(LINEAR_XAVIER_SCALE, mode="fan_avg")
 
 
 def tf_config(allow_growth=True, **kwargs):
@@ -33,14 +41,6 @@ def leaky_relu(x, leak=0.2, name='leaky_relu'):
         f1 = 0.5 * (1 + leak)
         f2 = 0.5 * (1 - leak)
         return f1 * x + f2 * abs(x)
-
-
-def xavier_init(relu_scale=True, mode='fan_avg'):
-    """
-    Xavier initialization
-    """
-    # TODO: make sure this is the correct scale for tanh (some sources say ~1.32, others 4., but 1. seems to give better results)
-    return tf.variance_scaling_initializer(2. if relu_scale else 1., mode=mode)
 
 
 def _cosine_annealing(x, max_lr, min_lr):
