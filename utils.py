@@ -25,6 +25,7 @@ SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 RELU_XAVIER_SCALE = 2.
 TANH_XAVIER_SCALE = 4.
 LINEAR_XAVIER_SCALE = 1.
+selu_xavier_init = tf.variance_scaling_initializer(1., mode="fan_in")
 relu_xavier_avg = tf.variance_scaling_initializer(RELU_XAVIER_SCALE, mode="fan_avg")
 tanh_xavier_avg = tf.variance_scaling_initializer(TANH_XAVIER_SCALE, mode="fan_avg")
 linear_xavier_avg = tf.variance_scaling_initializer(LINEAR_XAVIER_SCALE, mode="fan_avg")

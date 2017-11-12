@@ -18,19 +18,13 @@ import utils
 __all__ = ['build_graph', 'train']
 
 DEFAULT_HYPERPARAMETERS = {'epochs': 96,
-                           'lr': 0.1,
-                           'warm_resart_lr': {
-                               'initial_cycle_length': 20,
-                               'lr_cycle_growth': 1.5,
-                               'minimal_lr': 5e-8,
-                               'keep_best_snapshot': 2},
-                           'momentum': 0.9,
+                           'lr': 1e-4,  #  0.1,
                            'depth': 10,
                            'hidden_size': 512,
                            'batch_size': 1024,
-                           'early_stopping': None,
-                           'dropout_keep_prob': 1.,
-                           'l2_regularization': 2.5e-4,
+                           'early_stopping': 20,
+                           'dropout_keep_prob': .83,
+                           'l2_regularization': 0.,  # 2.5e-4,
                            'output_size': 512}
 
 VALID_SIZE = 100000
@@ -40,8 +34,7 @@ ALLOW_GPU_MEM_GROWTH = True
 EXTENDED_SUMMARY_EVAL_PERIOD = 40
 
 
-
-def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, init=utils.tanh_xavier_avg, training=False):
+def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=False, summarize=True, activation=tf.nn.selu, init=utils.selu_xavier_init, training=False):
     with tf.variable_scope(name):
         weights = tf.get_variable(initializer=init(shape), name='w', collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
         bias = tf.get_variable(initializer=tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
@@ -49,15 +42,13 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
         if batch_norm:
             logits = tf.layers.batch_normalization(logits, training=training, name='batch_norm')
         dense = activation(logits) if activation is not None else logits
-        dense_do = tf.nn.dropout(dense, dropout_keep_prob)
+        dense = tf.contrib.nn.alpha_dropout(dense, dropout_keep_prob)
         if summarize:
             image = tf.reshape(weights, [1, weights.shape[0].value, weights.shape[1].value, 1])
             tf.summary.image('weights', image, collections=['extended_summary'])
             tf.summary.histogram('weights_histogram', weights, collections=['extended_summary'])
             tf.summary.histogram('bias', bias, collections=['extended_summary'])
-    return dense_do
-
-
+    return dense
 
 
 def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
@@ -94,7 +85,7 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
     with tf.variable_scope('L2_regularization'):
         L2 = l2_reg * tf.add_n([tf.nn.l2_loss(w) for w in tf.get_collection('weights')])
     loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits) + L2
-    optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=hp['momentum'])
+    optimizer = tf.train.AdamOptimizer(learning_rate=lr)
     grads_and_vars = optimizer.compute_gradients(loss)
     with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
         apply_grad = optimizer.apply_gradients(grads_and_vars)
