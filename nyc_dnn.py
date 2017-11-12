@@ -40,7 +40,6 @@ ALLOW_GPU_MEM_GROWTH = True
 EXTENDED_SUMMARY_EVAL_PERIOD = 40
 
 
-
 def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, init=utils.tanh_xavier_avg, training=False):
     with tf.variable_scope(name):
         weights = tf.get_variable(initializer=init(shape), name='w', collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
@@ -58,8 +57,6 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
     return dense_do
 
 
-
-
 def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
     """ Define Tensorflow DNN model architechture """
     hidden_size = hp['hidden_size']
@@ -68,7 +65,8 @@ def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, train
         layer = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize, training=training)
         for i in range(1, hp['depth'] - 1):
             layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
-        logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
+        logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, training=training,
+                              activation=None, init=utils.linear_xavier_avg)
     pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
     return pred, logits
 
