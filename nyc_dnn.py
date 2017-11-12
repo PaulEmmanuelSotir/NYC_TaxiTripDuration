@@ -11,27 +11,25 @@ import shutil
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import tensorflow.contrib.kfac as kfac
 
 import feature_engineering
 import utils
 
 __all__ = ['build_graph', 'train']
 
-DEFAULT_HYPERPARAMETERS = {'epochs': 96,
-                           'lr': 0.1,
-                           'warm_resart_lr': {
-                               'initial_cycle_length': 20,
-                               'lr_cycle_growth': 1.5,
-                               'minimal_lr': 5e-8,
-                               'keep_best_snapshot': 2},
+DEFAULT_HYPERPARAMETERS = {'epochs': 161,  # 96,
+                           'lr': 1e-5, #0.1,
+                           'cov_ema_decay': 0.95,
+                           'damping': 0.0001,
+                           'momentum': 0.99,
                            'depth': 10,
                            'hidden_size': 512,
-                           'batch_size': 1024,
-                           'early_stopping': None,
+                           'batch_size': 128,
+                           'early_stopping': 20,
                            'dropout_keep_prob': 1.,
-                           'l2_regularization': 2.5e-4,
+                           'l2_regularization': 3e-5,
                            'output_size': 512}
-
 VALID_SIZE = 100000
 EVALUATE_PERIOD = 1
 PRED_BATCH_SIZE = 64 * 1024
@@ -39,8 +37,7 @@ ALLOW_GPU_MEM_GROWTH = True
 EXTENDED_SUMMARY_EVAL_PERIOD = 40
 
 
-
-def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=True, activation=tf.nn.tanh, init=utils.tanh_xavier_avg, training=False):
+def _dense_layer(lc, x, shape, dropout_keep_prob, name, batch_norm=False, summarize=True, activation=tf.nn.tanh, init=utils.tanh_xavier_avg, training=False, approx='kron'):
     with tf.variable_scope(name):
         weights = tf.get_variable(initializer=init(shape), name='w', collections=['weights', tf.GraphKeys.GLOBAL_VARIABLES, tf.GraphKeys.TRAINABLE_VARIABLES])
         bias = tf.get_variable(initializer=tf.truncated_normal([shape[1]]) if shape[1] > 1 else 0., name='b')
@@ -48,28 +45,30 @@ def _dense_layer(x, shape, dropout_keep_prob, name, batch_norm=True, summarize=T
         if batch_norm:
             logits = tf.layers.batch_normalization(logits, training=training, name='batch_norm')
         dense = activation(logits) if activation is not None else logits
-        dense_do = tf.nn.dropout(dense, dropout_keep_prob)
+        # TODO: put dropout back
+        # dense = tf.nn.dropout(dense, dropout_keep_prob)
         if summarize:
             image = tf.reshape(weights, [1, weights.shape[0].value, weights.shape[1].value, 1])
             tf.summary.image('weights', image, collections=['extended_summary'])
             tf.summary.histogram('weights_histogram', weights, collections=['extended_summary'])
             tf.summary.histogram('bias', bias, collections=['extended_summary'])
-    return dense_do
-
-
+        # Register layer to layer collection for KFAC optimizer
+        lc.register_fully_connected((weights, bias), x, logits, approx=approx)
+    return dense
 
 
 def _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize, training=False):
     """ Define Tensorflow DNN model architechture """
+    lc = kfac.layer_collection.LayerCollection()
     hidden_size = hp['hidden_size']
     with tf.variable_scope('dnn'):
         # Define DNN layers
-        layer = _dense_layer(X, (n_input, hidden_size), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize, training=training)
+        layer = _dense_layer(lc, X, (n_input, hidden_size), dropout_keep_prob, 'input_layer', batch_norm=False, summarize=summarize, training=training)
         for i in range(1, hp['depth'] - 1):
-            layer = _dense_layer(layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training)
-        logits = _dense_layer(layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, training=training)
+            layer = _dense_layer(lc, layer, (hidden_size, hidden_size), dropout_keep_prob, 'layer_' + str(i), summarize=summarize, training=training, approx='diagonal')
+        logits = _dense_layer(lc, layer, (hidden_size, hp['output_size']), 1., 'output_layer', summarize=summarize, activation=None, init=utils.linear_xavier_avg, training=training)
     pred = tf.reduce_sum(bucket_means * tf.nn.softmax(logits), axis=1)
-    return pred, logits
+    return pred, logits, lc
 
 
 def build_graph(n_input, hp, bucket_means, summarize=True):
@@ -85,15 +84,19 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
         train = tf.placeholder_with_default(False, [], name='training')
 
     bucket_means = tf.constant(bucket_means, dtype=tf.float32, name='buckets_means')
-    pred, logits = _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize=summarize, training=train)
+    pred, logits, layer_collection = _build_dnn(X, n_input, hp, bucket_means, dropout_keep_prob, summarize=summarize, training=train)
     tf.summary.histogram('pred', pred, collections=['extended_summary'])
     rmse = tf.sqrt(tf.losses.mean_squared_error(y, pred), name='rmse')
 
-    # Define loss function (cross entropy and L2 regularization) and optimizer
+    # Define loss function (cross entropy and L2 regularization)
     with tf.variable_scope('L2_regularization'):
         L2 = l2_reg * tf.add_n([tf.nn.l2_loss(w) for w in tf.get_collection('weights')])
     loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits) + L2
-    optimizer = tf.train.MomentumOptimizer(learning_rate=lr, use_nesterov=True, momentum=hp['momentum'])
+    layer_collection.register_categorical_predictive_distribution(logits)
+
+    # Construct training ops using Kfac optimizer
+    optimizer = kfac.optimizer.KfacOptimizer(learning_rate=hp['lr'], cov_ema_decay=hp['cov_ema_decay'], damping=hp['damping'], momentum=hp['momentum'],
+                                             layer_collection=layer_collection)
     grads_and_vars = optimizer.compute_gradients(loss)
     with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
         apply_grad = optimizer.apply_gradients(grads_and_vars)
@@ -101,13 +104,13 @@ def build_graph(n_input, hp, bucket_means, summarize=True):
 
     # Variable initialization operation
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(), name='init_op')
-    return pred, rmse, loss, train_op, (lr, dropout_keep_prob, l2_reg, X, labels, y, train), tf.train.Saver(), init_op
+    return pred, rmse, loss, train_op, optimizer, (lr, dropout_keep_prob, l2_reg, X, labels, y, train), tf.train.Saver(), init_op,
 
 
 def train(model, dataset, hp, save_dir, testset):
     # Unpack parameters and tensors
     train_data, valid_data, train_targets, valid_targets, train_labels, _ = dataset
-    pred, rmse, loss, train_op, placeholders, saver, init_op = model
+    pred, rmse, loss, train_op, optimizer, placeholders, saver, init_op = model
     lr, dropout_keep_prob, l2_regularization, X, labels, y, training = placeholders
     wr_hp = hp.get('warm_resart_lr')
 
@@ -133,13 +136,15 @@ def train(model, dataset, hp, save_dir, testset):
             mean_rmse, mean_loss, mean_lr = 0., 0., 0.
             for step, range_min in zip(range(batch_per_epoch), range(0, len(train_data) - 1, hp['batch_size'])):
                 range_max = min(range_min + hp['batch_size'], len(train_data))
-                batch_rmse, batch_loss = sess.run(train_op, feed_dict={X: train_data[range_min:range_max],
-                                                                       y: train_targets[range_min:range_max],
-                                                                       labels: train_labels[range_min:range_max],
-                                                                       lr: learning_rate,
-                                                                       dropout_keep_prob: hp['dropout_keep_prob'],
-                                                                       l2_regularization: hp['l2_regularization'],
-                                                                       training: True})
+                (batch_rmse, batch_loss), _ = sess.run([train_op, optimizer.cov_update_op], feed_dict={X: train_data[range_min:range_max],
+                                                                                                       y: train_targets[range_min:range_max],
+                                                                                                       labels: train_labels[range_min:range_max],
+                                                                                                       lr: learning_rate,
+                                                                                                       dropout_keep_prob: hp['dropout_keep_prob'],
+                                                                                                       l2_regularization: hp['l2_regularization'],
+                                                                                                       training: True})
+                if (epoch * batch_per_epoch + step) % 100 == 0:
+                    sess.run(optimizer.inv_update_op)  # Update preconditioner matrix using statistics from cov_update_op
                 if wr_hp is not None:
                     learning_rate, new_cycle = utils.warm_restart(epoch + step / batch_per_epoch, t_0=wr_hp['initial_cycle_length'],
                                                                   max_lr=hp['lr'], min_lr=wr_hp['minimal_lr'], t_mult=wr_hp['lr_cycle_growth'])

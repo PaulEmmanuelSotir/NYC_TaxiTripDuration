@@ -13,7 +13,6 @@ import tensorflow as tf
 import hyperopt as ho
 import pandas as pd
 import numpy as np
-import argparse
 import time
 import math
 import os
@@ -41,17 +40,18 @@ MAX_EVALS = 35
 SUB_TRAINSET_SIZE = 1.
 ALLOW_GPU_MEM_GROWTH = True
 OPT_ALGO = ho.tpe.suggest
-HP_SPACE = {'epochs': 200,
-            'early_stopping': 20,
+HP_SPACE = {'epochs': 130,  # 96,
             'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
-            'opt': {'algo': tf.train.AdamOptimizer},
-            'depth': ho.hp.choice('depth', [4, 5]),
-            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048, 4096, 8192]),
+            'cov_ema_decay': ho.hp.uniform('cov_ema_decay', 0.75, 0.99),
+            'damping': ho.hp.loguniform('damping', math.log(2e-4), math.log(2e-2)),
+            'momentum': ho.hp.uniform('cov_ema_decay', 0.75, 0.99),
+            'depth': 5,
             'hidden_size': 512,
-            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
-            'max_norm_threshold': ho.hp.uniform('max_norm_threshold', 0.8, 2.),
-            'duration_std_margin': 5,
-            'output_size': 1}
+            'batch_size': 1024,
+            'early_stopping': 10,
+            'dropout_keep_prob': 1.,
+            'l2_regularization': ho.hp.uniform('l2_regularization', 1e-5, 1e-3),
+            'output_size': 512}
 
 
 def main():
