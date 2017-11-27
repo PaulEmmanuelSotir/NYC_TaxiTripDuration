@@ -1,0 +1,15 @@
+name: tf-nyc-taxi-trip
+channels:
+- scitools
+- defaults
+dependencies:
+- joblib=0.11=py35_0
+- matplotlib=2.0.2=np111py35_0
+- pandas=0.20.1=np111py35_0
+- pip=9.0.1=py35_1
+- scikit-learn=0.18.1=np111py35_1
+- seaborn=0.8=py35_0
+- setuptools=27.2.0=py35_1
+- pip:
+  - jupyter==1.0.0
+  - tensorflow-gpu==1.4.0
