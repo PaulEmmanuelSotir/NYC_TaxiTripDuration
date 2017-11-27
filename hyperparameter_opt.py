@@ -4,7 +4,7 @@
 Uses hyperopt module to search for optimal DNN hyper parameters.
 
 Note: 'output_size' can't be changed during hyperparameter search as data preprocessing depends on this parameter.
-      If you need to search over this parameter, make sure to re-execute 'feature_engineering.load_data' in '_objective' function.
+      If you need to search over this parameter, make sure to re-execute 'feature_engineering.load_data' in '_objective' function (can be expensive).
 
 .. See https://github.com/PaulEmmanuelSotir/NYC_TaxiTripDuration
 """
@@ -25,15 +25,12 @@ import nyc_dnn
 # HP_SPACE = {'epochs': 200,
 #            'early_stopping': 20,
 #            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
-#            'opt': ho.hp.choice('opt', [tf.train.AdamOptimizer,
-#                                        tf.train.RMSPropOptimizer,
-#                                        tf.train.GradientDescentOptimizer]),
+#            'momentum': ho.hp.uniform('momentum', 0.8, 0.95),
 #            'depth': ho.hp.choice('depth', [4, 5, 6, 7, 8, 9]),
-#            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048, 4096, 8192]),
 #            'hidden_size': ho.hp.choice('hidden_size', [256, 512, 1024]),
+#            'batch_size': ho.hp.choice('batch_size', [256, 512, 1024, 2048]),
 #            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
-#            'max_norm_threshold': ho.hp.uniform('max_norm_threshold', [0.8, 2.]),
-#            'duration_std_margin': ho.hp.choice('duration_std_margin', [5, 6]),
+#            'l2_regularization': ho.hp.loguniform('l2_regularization', math.log(1e-6), math.log(1e-3)),
 #            'output_size': ho.hp.choice('output_size', [1, 128, 256, 512])}
 
 # Hyperparameter optimization space and algorithm
@@ -44,17 +41,16 @@ OPT_ALGO = ho.tpe.suggest
 HP_SPACE = {'epochs': 200,
             'early_stopping': 20,
             'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
-            'opt': {'algo': tf.train.AdamOptimizer},
-            'depth': ho.hp.choice('depth', [4, 5]),
-            'batch_size': ho.hp.choice('batch_size', [512, 1024, 2048, 4096, 8192]),
+            'momentum': ho.hp.uniform('momentum', 0.8, 0.95),
+            'depth': 5,
             'hidden_size': 512,
+            'batch_size': 1024,
             'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
-            'max_norm_threshold': ho.hp.uniform('max_norm_threshold', 0.8, 2.),
-            'duration_std_margin': 5,
-            'output_size': 1}
+            'l2_regularization': ho.hp.loguniform('l2_regularization', math.log(1e-6), math.log(1e-3)),
+            'output_size': 512}
 
 
-def main():
+def main(_=None):
     # Define working directories
     source_dir = os.path.dirname(os.path.abspath(__file__))
     save_dir = '/output/' if tf.flags.FLAGS.floyd_job else os.path.join(source_dir, 'models/hyperopt_models/')
@@ -92,12 +88,10 @@ def main():
             summary_writer = tf.summary.FileWriter(model_save_dir, sess.graph)
             summary = sess.run(hp_summary_op, feed_dict={hp_string: 'Trial #' + str(eval_count) + ' hyperparameters:\n' + str(hyperparameters)})
             summary_writer.add_summary(summary, 0)
-        # Get buckets from train targets
-        train_labels, test_labels, bucket_means = nyc_dnn.bucketize(dataset[2], dataset[3], hyperparameters['output_size'])
         # Build model
-        model = nyc_dnn.build_model(features_len, hyperparameters, bucket_means, summarize_parameters=False)
+        model = nyc_dnn.build_graph(features_len, hyperparameters, bucket_means, summarize=False)
         # Train model
-        test_rmse, predictions = nyc_dnn.train(model, dataset, train_labels, test_labels, hyperparameters, model_save_dir, testset)
+        test_rmse, predictions = nyc_dnn.train(model, dataset, hyperparameters, model_save_dir, testset)
         # Save predictions to csv file for Kaggle submission
         predictions = np.int32(np.round(np.exp(predictions))) - 1
         pd.DataFrame(np.column_stack([test_ids, predictions]), columns=['id', 'trip_duration']
@@ -119,5 +113,6 @@ def main():
 
 
 if __name__ == '__main__':
+    tf.logging.set_verbosity(tf.logging.INFO)  # Set log level to debug
     tf.flags.DEFINE_bool('floyd-job', False, 'Change working directories for training on Floyd.')
     tf.app.run()
