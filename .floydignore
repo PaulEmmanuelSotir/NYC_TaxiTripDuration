@@ -19,4 +19,4 @@ notebooks
 *.csv
 *.zip
 __pycache__
-notebooks
+.vscode

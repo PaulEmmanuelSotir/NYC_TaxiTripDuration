@@ -6,6 +6,7 @@ NYC_taxi_data_2016/cache/
 models/
 old_models/
 gan_models/
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

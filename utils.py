@@ -47,7 +47,12 @@ def _cosine_annealing(x, max_lr, min_lr):
     return (np.cos(np.pi * x) + 1.) / 2.
 
 
-def warm_restart(epoch, t_0, max_lr, min_lr=1e-8, t_mult=2, annealing_fn=_cosine_annealing):
+def _log_cosine_annealing(x, max_lr, min_lr):
+    exp = np.log((np.exp(2) - np.exp(0)) * x + np.exp(0)) / 2.
+    return (np.cos(np.pi * exp) + 1.) / 2.
+
+
+def warm_restart(epoch, t_0, max_lr, min_lr=1e-8, t_mult=2, annealing_fn=_log_cosine_annealing):
     """ Stochastic gradient descent with warm restarts of learning rate (see https://arxiv.org/pdf/1608.03983.pdf) """
     def _cycle_length(c): return t_0 * t_mult ** c
     cycle = int(np.floor(np.log(1 - epoch / t_0 * (1 - t_mult)) / np.log(t_mult)))
