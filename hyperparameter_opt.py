@@ -13,7 +13,6 @@ import tensorflow as tf
 import hyperopt as ho
 import pandas as pd
 import numpy as np
-import argparse
 import time
 import math
 import os
@@ -34,19 +33,21 @@ import nyc_dnn
 #            'output_size': ho.hp.choice('output_size', [1, 128, 256, 512])}
 
 # Hyperparameter optimization space and algorithm
-MAX_EVALS = 35
+MAX_EVALS = 100
 SUB_TRAINSET_SIZE = 1.
 ALLOW_GPU_MEM_GROWTH = True
 OPT_ALGO = ho.tpe.suggest
-HP_SPACE = {'epochs': 200,
-            'early_stopping': 20,
-            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),
+HP_SPACE = {'epochs': 50,
+            'early_stopping': 10,
+            'lr': ho.hp.loguniform('lr', math.log(2e-5), math.log(2e-3)),  # TODO: add tf.train.exponential_decay
             'momentum': ho.hp.uniform('momentum', 0.8, 0.95),
-            'depth': 5,
+            'depth': 6,
+            'embedding_dim': 8,
+            'max_embedding_values': 64,
             'hidden_size': 512,
             'batch_size': 1024,
-            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.75, 0.9),
-            'l2_regularization': ho.hp.loguniform('l2_regularization', math.log(1e-6), math.log(1e-3)),
+            'dropout_keep_prob': ho.hp.uniform('dropout_keep_prob', 0.7, 1.0),
+            'l2_regularization': ho.hp.loguniform('l2_regularization', math.log(1e-7), math.log(1e-3)),
             'output_size': 512}
 
 
